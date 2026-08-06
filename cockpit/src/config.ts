@@ -1,0 +1,25 @@
+/**
+ * Build-time configuration.
+ *
+ * The inbound number is live: a caller on a real phone reaches the same agent
+ * as the browser button, over the SIP trunk. Two forms are kept because they
+ * are read by different things — `PHONE_E164` is what a `tel:` link dials,
+ * `PHONE_DISPLAY` is what a human reads off the placard. A fork pointed at a
+ * different trunk overrides both; if it sets only the number, the placard
+ * prints the E.164 form rather than guessing at a country's grouping.
+ */
+
+const env = import.meta.env;
+
+const numberOverride = env.VITE_PHONE_NUMBER?.trim();
+const displayOverride = env.VITE_PHONE_DISPLAY?.trim();
+
+/** E.164, digits only after the plus — the string a `tel:` link dials. */
+export const PHONE_E164: string = numberOverride || '+447782684287';
+
+/** The same number, grouped for reading and for dialling by hand. */
+export const PHONE_DISPLAY: string = displayOverride || numberOverride || '+44 7782 684 287';
+
+export const SITE_URL = 'https://agentmaker.io';
+
+export const REPO_URL: string = env.VITE_REPO_URL ?? 'https://github.com/sgreszcz/glass-cockpit';

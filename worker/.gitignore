@@ -1,0 +1,2 @@
+# Real local secrets for `wrangler dev` — the .example file is the tracked one.
+.dev.vars

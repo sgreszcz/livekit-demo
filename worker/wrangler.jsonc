@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "glass-cockpit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  // The built cockpit SPA. `run_worker_first` keeps static assets on the asset
+  // router — only /api/* costs a Worker invocation — while SPA fallback lets
+  // /call/:id deep links render index.html.
+  "assets": {
+    "directory": "../cockpit/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "kv_namespaces": [
+    {
+      "binding": "DEBRIEFS",
+      "id": "e9d5889872254b0a801840ea2726d7aa"
+    }
+  ],
+
+  "routes": [{ "pattern": "cockpit.agentmaker.io", "custom_domain": true }],
+
+  "vars": {
+    // Public: handed to the browser alongside the signed token.
+    // Override per-environment; the API key/secret are secrets, not vars.
+    "LIVEKIT_URL": "wss://livekik-rbhzpdof.livekit.cloud"
+  },
+
+  // Secrets, set with `npx wrangler secret put <NAME>` — never in this file:
+  //   LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEBRIEF_TOKEN
+  "observability": {
+    "enabled": true
+  }
+}

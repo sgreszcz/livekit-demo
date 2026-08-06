@@ -1,0 +1,72 @@
+{"v":1,"type":"call_meta","ts":1723000000.0,"payload":{"call_id":"RM_demo0001","room":"cockpit-demo01","started_at":1723000000.0,"pipeline":{"stt":"deepgram/nova-3","llm":"openai/gpt-4.1-mini","tts":"cartesia/sonic-3"},"entry":"browser"}}
+{"v":1,"type":"state","ts":1723000000.2,"payload":{"state":"listening","prev":"initializing"}}
+{"v":1,"type":"state","ts":1723000000.5,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000001.9,"speech_id":"t0","payload":{"turn_id":"t0","llm":{"ttft":0.62,"duration":1.4,"prompt_tokens":577,"completion_tokens":79,"tokens_per_second":56.4,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000002.0,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000002.2,"speech_id":"t0","payload":{"turn_id":"t0","tts":{"ttfb":0.19,"duration":2.1,"audio_duration":9.4,"model":"cartesia/sonic-3"}}}
+{"v":1,"type":"transcript","ts":1723000002.3,"speech_id":"t0","payload":{"role":"agent","text":"Welcome to Glass Cockpit. You're talking to a LiveKit voice agent, and everything on your screen is my own live telemetry \u2014 every turn we take, measured stage by stage. Ask me about the numbers, or try chaos mode.","final":true,"turn_id":"t0"}}
+{"v":1,"type":"usage","ts":1723000010.9,"payload":{"llm_prompt_tokens":577,"llm_completion_tokens":79,"stt_audio_seconds":0.0,"tts_characters":213,"est_cost_usd":0.0025}}
+{"v":1,"type":"state","ts":1723000011.0,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"transcript","ts":1723000013.4,"speech_id":"t1","payload":{"role":"user","text":"Hey, what is this demo exactly?","final":true,"turn_id":"t1"}}
+{"v":1,"type":"turn","ts":1723000013.4,"speech_id":"t1","payload":{"turn_id":"t1","eou":{"end_of_utterance_delay":0.41,"transcription_delay":0.12}}}
+{"v":1,"type":"turn","ts":1723000013.4,"speech_id":"t1","payload":{"turn_id":"t1","stt":{"duration":0.0,"audio_duration":3.1,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000013.4,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000014.5,"speech_id":"t1","payload":{"turn_id":"t1","llm":{"ttft":0.34,"duration":1.1,"prompt_tokens":820,"completion_tokens":58,"tokens_per_second":52.7,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000014.5,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000014.7,"speech_id":"t1","payload":{"turn_id":"t1","tts":{"ttfb":0.19,"duration":2.0,"audio_duration":4.2,"model":"cartesia/sonic-3"},"total_response_latency":0.94,"degraded":false}}
+{"v":1,"type":"transcript","ts":1723000014.8,"speech_id":"t1","payload":{"role":"agent","text":"You're seeing my flight recorder. Every turn is broken into end-of-utterance detection, my first token, and my first audio byte \u2014 the three delays you actually experience as waiting.","final":true,"turn_id":"t1"}}
+{"v":1,"type":"state","ts":1723000017.1,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000017.2,"payload":{"llm_prompt_tokens":1397,"llm_completion_tokens":137,"stt_audio_seconds":3.1,"tts_characters":395,"est_cost_usd":0.0051}}
+{"v":1,"type":"transcript","ts":1723000019.6,"speech_id":"t2","payload":{"role":"user","text":"How's the call quality right now?","final":true,"turn_id":"t2"}}
+{"v":1,"type":"turn","ts":1723000019.6,"speech_id":"t2","payload":{"turn_id":"t2","eou":{"end_of_utterance_delay":0.38,"transcription_delay":0.1}}}
+{"v":1,"type":"turn","ts":1723000019.6,"speech_id":"t2","payload":{"turn_id":"t2","stt":{"duration":0.0,"audio_duration":2.8,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000019.6,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000021.0,"speech_id":"t2","payload":{"turn_id":"t2","llm":{"ttft":0.61,"duration":1.4,"prompt_tokens":1090,"completion_tokens":74,"tokens_per_second":49.0,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000021.0,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000021.2,"speech_id":"t2","payload":{"turn_id":"t2","tts":{"ttfb":0.17,"duration":2.3,"audio_duration":5.0,"model":"cartesia/sonic-3"},"total_response_latency":1.16,"degraded":false}}
+{"v":1,"type":"transcript","ts":1723000021.3,"speech_id":"t2","payload":{"role":"agent","text":"Your last turn took about nine hundred and forty milliseconds end to end \u2014 four hundred and ten in turn detection, three hundred and forty to my first token, one ninety to first audio. We're in good shape.","final":true,"turn_id":"t2"}}
+{"v":1,"type":"state","ts":1723000024.1,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000024.2,"payload":{"llm_prompt_tokens":2487,"llm_completion_tokens":211,"stt_audio_seconds":5.9,"tts_characters":600,"est_cost_usd":0.0081}}
+{"v":1,"type":"chaos","ts":1723000026.5,"payload":{"llm_delay_ms":800,"active":true}}
+{"v":1,"type":"transcript","ts":1723000026.9,"speech_id":"t3","payload":{"role":"user","text":"Turn on chaos mode, eight hundred milliseconds.","final":true,"turn_id":"t3"}}
+{"v":1,"type":"turn","ts":1723000026.9,"speech_id":"t3","payload":{"turn_id":"t3","eou":{"end_of_utterance_delay":0.44,"transcription_delay":0.13}}}
+{"v":1,"type":"turn","ts":1723000026.9,"speech_id":"t3","payload":{"turn_id":"t3","stt":{"duration":0.0,"audio_duration":2.5,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000026.9,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000028.8,"speech_id":"t3","payload":{"turn_id":"t3","llm":{"ttft":1.15,"duration":1.9,"prompt_tokens":2010,"completion_tokens":41,"tokens_per_second":47.2,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000028.8,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000029.0,"speech_id":"t3","payload":{"turn_id":"t3","tts":{"ttfb":0.18,"duration":1.6,"audio_duration":3.2,"model":"cartesia/sonic-3"},"total_response_latency":1.77,"degraded":true}}
+{"v":1,"type":"transcript","ts":1723000029.1,"speech_id":"t3","payload":{"role":"agent","text":"Chaos is on \u2014 I'm now adding eight hundred milliseconds before every response. Watch my waterfall get worse.","final":true,"turn_id":"t3"}}
+{"v":1,"type":"state","ts":1723000030.8,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000030.9,"payload":{"llm_prompt_tokens":4497,"llm_completion_tokens":252,"stt_audio_seconds":8.4,"tts_characters":708,"est_cost_usd":0.0104}}
+{"v":1,"type":"transcript","ts":1723000033.3,"speech_id":"t4","payload":{"role":"user","text":"Yeah, this feels slower now.","final":true,"turn_id":"t4"}}
+{"v":1,"type":"turn","ts":1723000033.3,"speech_id":"t4","payload":{"turn_id":"t4","eou":{"end_of_utterance_delay":0.4,"transcription_delay":0.11}}}
+{"v":1,"type":"turn","ts":1723000033.3,"speech_id":"t4","payload":{"turn_id":"t4","stt":{"duration":0.0,"audio_duration":2.6,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000033.3,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000035.3,"speech_id":"t4","payload":{"turn_id":"t4","llm":{"ttft":1.21,"duration":2.0,"prompt_tokens":4050,"completion_tokens":66,"tokens_per_second":46.1,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000035.3,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000035.5,"speech_id":"t4","payload":{"turn_id":"t4","tts":{"ttfb":0.2,"duration":2.4,"audio_duration":5.1,"model":"cartesia/sonic-3"},"total_response_latency":1.81,"degraded":true}}
+{"v":1,"type":"transcript","ts":1723000035.6,"speech_id":"t4","payload":{"role":"agent","text":"Exactly \u2014 that pause you just felt is the injected model latency. In production this is what a slow region or an overloaded provider feels like.","final":true,"turn_id":"t4"}}
+{"v":1,"type":"interruption","ts":1723000037.1,"speech_id":"t4","payload":{"kind":"barge_in","turn_id":"t4"}}
+{"v":1,"type":"state","ts":1723000037.1,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000037.2,"payload":{"llm_prompt_tokens":8547,"llm_completion_tokens":318,"stt_audio_seconds":11.0,"tts_characters":852,"est_cost_usd":0.0139}}
+{"v":1,"type":"chaos","ts":1723000039.5,"payload":{"llm_delay_ms":0,"active":false}}
+{"v":1,"type":"transcript","ts":1723000039.9,"speech_id":"t5","payload":{"role":"user","text":"Okay okay, turn it off.","final":true,"turn_id":"t5"}}
+{"v":1,"type":"turn","ts":1723000039.9,"speech_id":"t5","payload":{"turn_id":"t5","eou":{"end_of_utterance_delay":0.39,"transcription_delay":0.1}}}
+{"v":1,"type":"turn","ts":1723000039.9,"speech_id":"t5","payload":{"turn_id":"t5","stt":{"duration":0.0,"audio_duration":2.2,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000039.9,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000040.8,"speech_id":"t5","payload":{"turn_id":"t5","llm":{"ttft":0.33,"duration":0.9,"prompt_tokens":5100,"completion_tokens":38,"tokens_per_second":51.3,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000040.8,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000041.0,"speech_id":"t5","payload":{"turn_id":"t5","tts":{"ttfb":0.18,"duration":1.4,"audio_duration":2.9,"model":"cartesia/sonic-3"},"total_response_latency":0.9,"degraded":false}}
+{"v":1,"type":"transcript","ts":1723000041.1,"speech_id":"t5","payload":{"role":"agent","text":"Chaos off. You also just barged in on me \u2014 you'll see that marked on the previous turn. Back to nominal.","final":true,"turn_id":"t5"}}
+{"v":1,"type":"state","ts":1723000042.7,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000042.8,"payload":{"llm_prompt_tokens":13647,"llm_completion_tokens":356,"stt_audio_seconds":13.2,"tts_characters":956,"est_cost_usd":0.0173}}
+{"v":1,"type":"transcript","ts":1723000045.2,"speech_id":"t6","payload":{"role":"user","text":"Cool. Who built you?","final":true,"turn_id":"t6"}}
+{"v":1,"type":"turn","ts":1723000045.2,"speech_id":"t6","payload":{"turn_id":"t6","eou":{"end_of_utterance_delay":0.42,"transcription_delay":0.12}}}
+{"v":1,"type":"turn","ts":1723000045.2,"speech_id":"t6","payload":{"turn_id":"t6","stt":{"duration":0.0,"audio_duration":2.7,"model":"deepgram/nova-3"}}}
+{"v":1,"type":"state","ts":1723000045.2,"payload":{"state":"thinking","prev":"listening"}}
+{"v":1,"type":"turn","ts":1723000046.4,"speech_id":"t6","payload":{"turn_id":"t6","llm":{"ttft":0.36,"duration":1.2,"prompt_tokens":6200,"completion_tokens":71,"tokens_per_second":50.4,"model":"openai/gpt-4.1-mini"}}}
+{"v":1,"type":"state","ts":1723000046.4,"payload":{"state":"speaking","prev":"thinking"}}
+{"v":1,"type":"turn","ts":1723000046.6,"speech_id":"t6","payload":{"turn_id":"t6","tts":{"ttfb":0.19,"duration":2.2,"audio_duration":4.8,"model":"cartesia/sonic-3"},"total_response_latency":0.97,"degraded":false}}
+{"v":1,"type":"transcript","ts":1723000046.7,"speech_id":"t6","payload":{"role":"agent","text":"Steve Greszczyszyn \u2014 twenty years of Cisco voice infrastructure, now building AI agents. He built this cockpit because the demo is the easy part; production is where teams bleed.","final":true,"turn_id":"t6"}}
+{"v":1,"type":"state","ts":1723000049.4,"payload":{"state":"listening","prev":"speaking"}}
+{"v":1,"type":"usage","ts":1723000049.5,"payload":{"llm_prompt_tokens":19847,"llm_completion_tokens":427,"stt_audio_seconds":15.9,"tts_characters":1134,"est_cost_usd":0.022}}

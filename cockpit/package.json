@@ -1,0 +1,30 @@
+{
+  "name": "glass-cockpit-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync-fixture": "node scripts/sync-fixture.mjs",
+    "dev": "npm run sync-fixture && vite",
+    "build": "npm run sync-fixture && tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "npm run sync-fixture && vitest run",
+    "typecheck": "tsc -b --force"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "livekit-client": "^2.21.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}

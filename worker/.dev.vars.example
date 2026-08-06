@@ -1,0 +1,8 @@
+# Copy to `.dev.vars` for `wrangler dev`. Never commit the real file.
+# In production these are set with `npx wrangler secret put <NAME>`.
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+LIVEKIT_URL=wss://<project>.livekit.cloud
+
+# Shared secret the Python agent presents on POST /api/debrief.
+DEBRIEF_TOKEN=

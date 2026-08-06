@@ -1,0 +1,1595 @@
+/*
+ * Glass Cockpit — flight-data recorder for voice agents.
+ *
+ * House rules:
+ *   - One ground (near-black navy), one panel fill, one hairline. Elevation is
+ *     made of borders and spacing, never of drop shadows stacked on drop shadows.
+ *   - Space Grotesk carries display and labels; JetBrains Mono carries every
+ *     numeral, identifier and axis. Fonts are bundled — the page renders the
+ *     same on a projector with the wifi off.
+ *   - Colour is an encoding, not decoration. Blue is the caller, violet is the
+ *     model, green is audio leaving the agent. Amber and red are spent only on
+ *     injected chaos and the turns it degrades; nothing else may borrow them.
+ */
+
+/* Bundled from the @fontsource packages rather than @import-ed, so only the
+   woff2 ships — the packages' own stylesheets also carry a woff fallback no
+   browser released this decade will ever fetch. Vite rewrites these to hashed
+   assets in dist; nothing here touches the network at runtime. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
+:root {
+  /* Ground and surfaces */
+  --bg: #080b11;
+  --panel: #0d121b;
+  --panel-2: #111823;
+  --panel-hover: #141c28;
+
+  /* Hairlines */
+  --line: #1c2432;
+  --line-soft: #161d28;
+  --line-strong: #2a3444;
+
+  /* Ink — all three clear WCAG AA on --panel */
+  --text: #e9eef7;
+  --text-dim: #9aa7bd;
+  --text-mute: #7f8b9e;
+  /* Incidental placards only — RECORDED, SIP TRUNK. Still AA on --panel, but
+     quiet enough that a chart label never has to compete with one. */
+  --text-faint: #737e91;
+
+  /* Encoding */
+  --accent: #3ddc97; /* healthy, active, audio out */
+  --caller: #4d8dfa; /* the caller and their silence */
+  --model: #a78bfa; /* the model thinking */
+  --mark: #dfe8f9; /* annotations laid over a bar */
+  --amber: #ffb43d; /* chaos armed */
+  --alarm: #ff6b70; /* chaos landed */
+
+  --accent-wash: rgba(61, 220, 151, 0.1);
+  --accent-line: rgba(61, 220, 151, 0.34);
+  --amber-wash: rgba(255, 180, 61, 0.11);
+  --alarm-wash: rgba(255, 107, 112, 0.1);
+  --caller-wash: rgba(77, 141, 250, 0.12);
+
+  /* Waterfall stages: an ordered ramp, cool at the front of the pipeline,
+     brightening as the caller gets closer to hearing something. */
+  --stage-eou: var(--caller);
+  --stage-ttft: var(--model);
+  --stage-ttfb: var(--accent);
+  --stage-transcription: var(--mark);
+
+  --font-display: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --gutter: clamp(16px, 3.4vw, 44px);
+  --gap: 16px;
+
+  --r-lg: 12px;
+  --r-md: 8px;
+  --r-sm: 5px;
+  --r-pill: 999px;
+
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 16px 40px -28px rgba(0, 0, 0, 0.9);
+  --ring: 0 0 0 1px var(--accent-line), 0 10px 30px -12px rgba(61, 220, 151, 0.3);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+/* One quiet wash from above. No scanlines, no grain — a projector turns texture
+   into mud, and the instruments should be the only thing emitting light. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1100px 520px at 50% -240px, rgba(61, 220, 151, 0.055), transparent 70%),
+    radial-gradient(900px 480px at 8% 105%, rgba(77, 141, 250, 0.045), transparent 70%);
+}
+
+::selection {
+  background: rgba(61, 220, 151, 0.26);
+  color: #fff;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-color: rgba(61, 220, 151, 0.35);
+  text-underline-offset: 3px;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: #6ff0b6;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Type ─────────────────────────────────────────────────────────────── */
+
+/* The stencilled panel label: small, tracked out, never shouting. */
+.legend {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* Every figure on the page: monospaced, tabular, and lining. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'zero' 1;
+}
+
+/* ── Panels ───────────────────────────────────────────────────────────── */
+
+.panel {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 16px 18px 18px;
+  box-shadow: var(--shadow);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.panel__aside {
+  font-size: 11px;
+  color: var(--text-mute);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A panel folded into a native disclosure (phone only — see useNarrow). The
+   head becomes the summary, so it carries the affordance and the rule under it
+   only exists once there is something below it to separate. */
+.panel--fold {
+  padding: 14px 16px;
+}
+
+.panel--fold > .panel__head {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  cursor: pointer;
+  list-style: none;
+}
+
+.panel--fold > .panel__head::-webkit-details-marker {
+  display: none;
+}
+
+.panel--fold[open] > .panel__head {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.panel--fold > .panel__head::after {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: -3px 2px 0 0;
+  border-right: 1.5px solid var(--text-mute);
+  border-bottom: 1.5px solid var(--text-mute);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.panel--fold[open] > .panel__head::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+
+/* ── Chips and tags ───────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-pill);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.chip--alarm {
+  color: var(--alarm);
+  background: var(--alarm-wash);
+}
+
+.chip--warn {
+  color: var(--amber);
+  background: var(--amber-wash);
+}
+
+.chip--ok {
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.chip--info {
+  color: var(--caller);
+  background: var(--caller-wash);
+}
+
+.chip--quiet {
+  color: var(--text-mute);
+  border-color: var(--line-strong);
+}
+
+/* A neutral placard tag — states a fact, encodes nothing, and is deliberately
+   the quietest text on the page so it cannot be mistaken for a reading. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ── Shell ────────────────────────────────────────────────────────────── */
+
+.shell {
+  position: relative;
+  z-index: 1;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 var(--gutter) 64px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(to bottom, var(--bg) 60%, rgba(8, 11, 17, 0.88));
+  backdrop-filter: blur(8px);
+}
+
+.topbar__mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.topbar__mark span {
+  color: var(--accent);
+}
+
+.mark-glyph {
+  display: block;
+  flex: none;
+}
+
+.topbar__spacer {
+  flex: 1;
+}
+
+/* Every topbar control in one group: it stays together and stays right-aligned
+   whether or not the bar has wrapped. */
+.topbar__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.topbar__actions:empty {
+  display: none;
+}
+
+/* Two labels for one control, so a phone gets the short one without a second
+   render or a resize listener. */
+.narrow-only {
+  display: none;
+}
+
+/* ── Status lamp ──────────────────────────────────────────────────────── */
+
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 11px 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--panel);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.lamp::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: currentColor;
+}
+
+.lamp--live {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
+}
+
+/* A ring that breathes outward once and clears — legible at a glance, and it
+   never touches layout, so it cannot cost a frame on a slow machine. */
+.lamp--live::before {
+  animation: ping 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.lamp--warn {
+  color: var(--amber);
+  border-color: rgba(255, 180, 61, 0.32);
+  background: var(--amber-wash);
+}
+
+.lamp--fault {
+  color: var(--alarm);
+  border-color: rgba(255, 107, 112, 0.32);
+  background: var(--alarm-wash);
+}
+
+.lamp--idle {
+  color: var(--text-mute);
+}
+
+@keyframes ping {
+  0% {
+    box-shadow: 0 0 0 0 rgba(61, 220, 151, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(61, 220, 151, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(61, 220, 151, 0);
+  }
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+
+.btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 9px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: #364256;
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* Primary: the only filled control on the page. Flat, one colour, no glow —
+   the waterfall is the only object here allowed to be loud. */
+.btn--primary {
+  padding: 13px 24px;
+  font-size: 14px;
+  border-color: transparent;
+  background: var(--accent);
+  color: #05130d;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: #5ff0b2;
+  border-color: transparent;
+  transform: translateY(-1px);
+}
+
+/* Declared after the hover lift so pressing still settles the button back. */
+.btn--primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn--quiet {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.btn--quiet:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--line-strong);
+}
+
+.btn--danger {
+  border-color: rgba(255, 107, 112, 0.35);
+  background: var(--alarm-wash);
+  color: var(--alarm);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: rgba(255, 107, 112, 0.18);
+  border-color: rgba(255, 107, 112, 0.55);
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(292px, 0.6fr);
+  gap: clamp(28px, 4.5vw, 64px);
+  align-items: start;
+  padding: clamp(32px, 6vh, 76px) 0 clamp(40px, 7vh, 84px);
+}
+
+.hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 13px 5px 11px;
+  margin-bottom: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--panel);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.hero__badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(61, 220, 151, 0.8);
+  flex: none;
+}
+
+.hero h1 {
+  margin: 0 0 22px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(42px, 6.6vw, 78px);
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+  color: var(--text);
+}
+
+/* The descriptor, set as the second movement of the same headline. */
+.hero h1 em {
+  display: block;
+  margin-top: 0.24em;
+  font-style: normal;
+  font-weight: 500;
+  font-size: 0.42em;
+  line-height: 1.14;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.hero__lede {
+  max-width: 56ch;
+  margin: 0 0 30px;
+  font-size: 15.5px;
+  line-height: 1.66;
+  color: var(--text-dim);
+}
+
+.hero__lede strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.hero__actions .btn:not(.btn--primary) {
+  padding: 13px 22px;
+  font-size: 14px;
+}
+
+.hero__note {
+  margin: 22px 0 0;
+  max-width: 52ch;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-mute);
+}
+
+.hero__aside {
+  display: grid;
+  gap: 14px;
+}
+
+/* The phone slot: a placarded instrument, not a marketing badge. */
+.placard {
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.placard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* The number is a readout first and a link second: it stays white and only
+   admits to being tappable on hover. */
+.placard__value {
+  display: block;
+  font-size: clamp(22px, 2.3vw, 28px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--text);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a.placard__value:hover {
+  color: var(--accent);
+}
+
+.placard__foot {
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+
+/* The hero's thumbnail waterfall: product proof above the fold. */
+.mini {
+  margin-bottom: 14px;
+}
+
+.mini__svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.mini__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* ── Key/value data list ──────────────────────────────────────────────── */
+
+.spec-list {
+  margin: 0;
+  display: grid;
+  gap: 0;
+}
+
+.spec-list div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.spec-list div:first-child {
+  padding-top: 0;
+}
+
+.spec-list div:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.spec-list dt {
+  flex: none;
+  width: 74px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+.spec-list dd {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* ── Cockpit layout ───────────────────────────────────────────────────── */
+
+.cockpit {
+  display: grid;
+  gap: var(--gap);
+  animation: rise 0.4s ease both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.cockpit__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  gap: var(--gap);
+  align-items: start;
+}
+
+.cockpit__main,
+.cockpit__rail {
+  display: grid;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+/* Staggered instrument power-up — 60ms apart, once, on mount. */
+.cockpit .panel {
+  animation: rise 0.38s ease both;
+}
+.cockpit .panel:nth-child(1) {
+  animation-delay: 0.03s;
+}
+.cockpit .panel:nth-child(2) {
+  animation-delay: 0.09s;
+}
+.cockpit .panel:nth-child(3) {
+  animation-delay: 0.15s;
+}
+
+/* ── Waterfall ────────────────────────────────────────────────────────── */
+
+.waterfall {
+  display: grid;
+  gap: 2px;
+}
+
+.wf-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 78px;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  border-left: 2px solid transparent;
+  transition: background 0.15s ease;
+  animation: rise 0.3s ease both;
+}
+
+.wf-row:hover {
+  background: rgba(255, 255, 255, 0.028);
+}
+
+/* Always mounted, even with no turns — this is the element whose chart column
+   is measured, and every turn row inherits its width. */
+.wf-row--axis {
+  padding-top: 2px;
+  padding-bottom: 0;
+  align-items: start;
+  animation: none;
+}
+
+.wf-row--axis:hover {
+  background: none;
+}
+
+/* Chaos landed here. Hatching plus a lit edge: unmistakable at projector
+   distance, still legible under the bars it sits behind. */
+.wf-row--degraded {
+  border-left-color: var(--alarm);
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(255, 107, 112, 0.09) 0 6px,
+    rgba(255, 107, 112, 0.03) 6px 12px
+  );
+}
+
+.wf-row--degraded:hover {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(255, 107, 112, 0.14) 0 6px,
+    rgba(255, 107, 112, 0.05) 6px 12px
+  );
+}
+
+.wf-row__id {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wf-row__ord {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+
+.wf-row--degraded .wf-row__ord {
+  color: var(--alarm);
+}
+
+.wf-row__total {
+  text-align: right;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.wf-row__total--over {
+  color: var(--amber);
+}
+
+.wf-row__total--degraded {
+  color: var(--alarm);
+}
+
+.wf-row__total small {
+  font-family: var(--font-display);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  margin-left: 3px;
+}
+
+.wf-row__pending {
+  font-size: 12px;
+  color: var(--text-mute);
+  letter-spacing: 0.1em;
+}
+
+/* An agent-initiated turn has no caller wait, so it prints a label where every
+   other row prints a number. Quiet enough not to read as a measurement. */
+.wf-row__partial {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+.wf-svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+/* Geometry properties animate as CSS in modern engines, so the bars re-scale
+   smoothly when a longer turn widens the shared axis. */
+.wf-seg {
+  transition:
+    width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    x 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Overlays sit on the same axis as the bar but must never read as part of it:
+   thin, low, and faint enough to sit visually underneath. */
+.wf-overlay {
+  opacity: 0.42;
+  transition:
+    width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    x 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Transcription lands inside the end-of-utterance window — a mark on the bar,
+   never a slice of it. */
+.wf-tick {
+  stroke: var(--stage-transcription);
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+
+/* The budget is a reference, not an alarm: a crisp neutral rule, but a legible
+   one — it is the line every bar is being judged against. Crossing it is what
+   turns amber, on the figure at the end of the row. */
+.wf-budget-rule {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.85;
+}
+
+/* The over-budget half of the plot, tinted just enough to read as a zone rather
+   than a background. Deliberately far below the amber the figures use. */
+.wf-overrun {
+  fill: var(--amber);
+  opacity: 0.03;
+}
+
+.wf-axis {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  overflow: visible;
+}
+
+.wf-axis text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  fill: var(--text-dim);
+}
+
+.wf-budget-note {
+  fill: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.wf-key {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.wf-key__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.wf-key__note {
+  margin: 12px 0 0;
+  max-width: 78ch;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-mute);
+}
+
+.wf-key__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.wf-key__swatch {
+  width: 16px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* The legend's stand-in for an overlay lane: thin and faint, as drawn. The hue
+   is set per entry — there is one lane per stage, and they are not the same. */
+.wf-key__swatch--lane {
+  height: 3px;
+  opacity: 0.42;
+}
+
+/* Defines the colour the total figure takes when a turn busts the budget. */
+.wf-key__amber {
+  color: var(--amber);
+  font-weight: 500;
+}
+
+.wf-empty {
+  margin: 0;
+  padding: 34px 0 30px;
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+/* ── State strip ──────────────────────────────────────────────────────── */
+
+.strip {
+  display: flex;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--panel-2);
+}
+
+.strip__seg {
+  min-width: 1px;
+  transition: flex-grow 0.3s linear;
+  box-shadow: inset -1px 0 0 rgba(8, 11, 17, 0.6);
+}
+
+.strip__seg:last-child {
+  box-shadow: none;
+}
+
+.strip__seg--listening {
+  background: linear-gradient(180deg, rgba(77, 141, 250, 0.85), rgba(77, 141, 250, 0.45));
+}
+.strip__seg--thinking {
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.85), rgba(167, 139, 250, 0.45));
+}
+.strip__seg--speaking {
+  background: linear-gradient(180deg, rgba(61, 220, 151, 0.85), rgba(61, 220, 151, 0.45));
+}
+.strip__seg--initializing {
+  background: rgba(127, 139, 158, 0.28);
+}
+
+.strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-top: 12px;
+}
+
+.strip-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.strip-legend__item b {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.strip-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* ── Transcript ───────────────────────────────────────────────────────── */
+
+.transcript-pane {
+  position: relative;
+}
+
+.transcript {
+  display: grid;
+  gap: 14px;
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+  padding-right: 8px;
+}
+
+.transcript::-webkit-scrollbar {
+  width: 6px;
+}
+.transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+.transcript::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--r-pill);
+}
+.transcript::-webkit-scrollbar-thumb:hover {
+  background: #3b4759;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
+  animation: rise 0.26s ease both;
+}
+
+.line__who {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding-top: 2px;
+}
+
+.line__who::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.line--user .line__who {
+  color: var(--caller);
+}
+
+.line--agent .line__who {
+  color: var(--accent);
+}
+
+.line__body {
+  min-width: 0;
+}
+
+.line__text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.line--interim .line__text {
+  color: var(--text-dim);
+}
+
+.line--interim .line__text::after {
+  content: '▌';
+  margin-left: 3px;
+  color: var(--caller);
+  animation: blink 1.1s steps(2, end) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.line__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+/* ── Stat tiles (ledger) ──────────────────────────────────────────────── */
+
+.ledger {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.ledger__cell {
+  padding: 12px 13px 13px;
+  background: var(--panel);
+}
+
+.ledger__cell--wide {
+  grid-column: 1 / -1;
+}
+
+.ledger__cell--cost {
+  background: linear-gradient(180deg, rgba(61, 220, 151, 0.07), rgba(61, 220, 151, 0.02));
+}
+
+.ledger__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+.ledger__value {
+  margin-top: 6px;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--text);
+}
+
+.ledger__value small {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-mute);
+  margin-left: 5px;
+}
+
+.ledger__cell--cost .ledger__value {
+  color: var(--accent);
+  font-size: 25px;
+}
+
+.ledger__caveat {
+  margin: 11px 0 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-mute);
+}
+
+/* ── Chaos control ────────────────────────────────────────────────────── */
+
+.chaos {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.chaos__opt {
+  appearance: none;
+  border: none;
+  padding: 11px 4px 12px;
+  background: var(--panel);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.chaos__opt:hover:not(:disabled) {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.chaos__opt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Armed, not yet degraded: amber. The red is spent on the turns it ruins. */
+.chaos__opt[aria-pressed='true'] {
+  background: var(--amber-wash);
+  color: var(--amber);
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+.chaos__opt[aria-pressed='true'][data-off='true'] {
+  background: var(--accent-wash);
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.chaos__note {
+  margin: 11px 0 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-mute);
+}
+
+/* ── Debrief bar ──────────────────────────────────────────────────────── */
+
+.debrief-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, rgba(61, 220, 151, 0.07), rgba(61, 220, 151, 0.02));
+}
+
+.debrief-bar__text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.debrief-bar__text p {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.share-url {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(8, 11, 17, 0.45);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* Something the visitor cannot act on — a link that has aged out, a call that
+   never existed. Neutral by design: red and amber on this page mean injected
+   chaos and a busted budget, and borrowing them here would cost them that. */
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 14px 16px;
+  margin: 0 0 18px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--caller);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.notice__action {
+  font-weight: 600;
+}
+
+.state-note {
+  padding: 56px 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 44px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+.footer__sep {
+  color: var(--line-strong);
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 1080px) {
+  .cockpit__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero__aside {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .hero__aside {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The phone layout is first-class: the invitation says call from your phone,
+   then open this page, so this is where most visitors meet the instruments. */
+@media (max-width: 640px) {
+  body {
+    font-size: 13.5px;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+  .topbar__spacer {
+    display: none;
+  }
+  /* Controls keep to the right edge whether or not the bar has wrapped, and
+     never wrap internally — `margin-left: auto` does both. */
+  .topbar__actions {
+    gap: 8px;
+  }
+  .wide-only {
+    display: none;
+  }
+  .narrow-only {
+    display: inline;
+  }
+  .hero h1 {
+    font-size: clamp(34px, 10vw, 46px);
+  }
+  .hero__actions .btn,
+  .hero__actions .btn--primary {
+    flex: 1 1 190px;
+  }
+
+  /* No label gutter: the turn id and its figure sit above the plot, so the
+     drawing itself gets the full width of the card. */
+  .wf-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'id total'
+      'chart chart';
+    gap: 2px 10px;
+    padding: 5px 4px 7px;
+  }
+  .wf-row__id {
+    grid-area: id;
+  }
+  .wf-row__chart {
+    grid-area: chart;
+    min-width: 0;
+  }
+  .wf-row__total {
+    grid-area: total;
+  }
+  .wf-row--axis {
+    padding-top: 0;
+  }
+  /* Chart metadata stays readable on a phone: nothing below 12px, and dim ink
+     rather than mute. */
+  .wf-axis text,
+  .wf-budget-note {
+    font-size: 12px;
+  }
+  .wf-key__row {
+    gap: 8px 14px;
+  }
+  .wf-key__item,
+  .wf-key__note,
+  .strip-legend__item {
+    font-size: 12px;
+  }
+  .mini__foot {
+    font-size: 11px;
+  }
+
+  /* A narrow head would otherwise ellipsis away half the readout. Give the
+     readout a row of its own rather than let it shrink into "wors…". */
+  .panel__head {
+    flex-wrap: wrap;
+    gap: 2px 12px;
+  }
+  .panel__aside {
+    flex: 1 0 100%;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .panel--fold > .panel__head .panel__aside {
+    flex: 0 1 auto;
+  }
+
+  .line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    scroll-snap-align: start;
+  }
+  /* The speaker label rides with its own message: whatever line the pane is
+     scrolled to, it is never a wall of text with no attribution. */
+  .line__who {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    justify-content: flex-start;
+    padding: 3px 0 4px;
+    background: var(--panel);
+  }
+  .transcript {
+    max-height: 320px;
+    scroll-snap-type: y proximity;
+    scroll-padding-top: 24px;
+    /* Clears the fade below, so scrolling to the end never leaves the last
+       line sitting half-dissolved under it. */
+    padding-bottom: 26px;
+  }
+  /* Says there is more below without waiting for a scrollbar to appear. */
+  .transcript-pane::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 28px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgba(13, 18, 27, 0), var(--panel));
+  }
+
+  .ledger {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .chaos {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .spec-list dt {
+    width: 62px;
+  }
+  /* Stacked, so a wrapped line can never open with a dangling slash. */
+  .footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+  }
+  .footer__sep {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
