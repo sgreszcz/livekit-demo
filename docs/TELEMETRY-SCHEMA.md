@@ -1,13 +1,15 @@
 # Glass Cockpit telemetry schema (v1)
 
 The contract between the Python agent worker (`agent/`) and the cockpit SPA (`cockpit/`).
-Neither side may change this file unilaterally — schema changes go through the orchestrator.
+Neither side changes this file unilaterally — it is the single source of truth both are
+tested against.
 
 ## Transport
 
 - Agent → browser: LiveKit data channel, `publish_data(payload, topic="cockpit", reliable=True)`.
 - Browser → agent (chaos toggle): same channel, topic `cockpit-control`.
-- Payload: UTF-8 JSON, one envelope per message, max ~15 KB (data channel packet limit is 15 KiB — split transcripts if needed).
+- Payload: UTF-8 JSON, one envelope per message, max ~15 KB (data channel packet limit is
+  15 KiB — an oversized transcript is truncated with an explicit `…[truncated]` marker).
 
 ## Envelope
 
@@ -115,7 +117,7 @@ Interim user transcripts have `"final": false` and may repeat; frontend replaces
   "messages": [ ...every envelope emitted during the call, in order... ] }
 ```
 Worker stores to KV under a short random id and returns `{ "id": "k7Qx2f", "url": "https://cockpit.agentmaker.io/call/k7Qx2f" }`.
-The agent speaks/logs the URL; for browser calls the frontend also assembles its own copy live.
+The agent logs the URL; for browser calls the frontend also assembles its own copy live.
 
 ## Fixture
 

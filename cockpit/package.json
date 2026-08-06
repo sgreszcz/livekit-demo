@@ -9,7 +9,7 @@
     "build": "npm run sync-fixture && tsc -b && vite build",
     "preview": "vite preview",
     "test": "npm run sync-fixture && vitest run",
-    "typecheck": "tsc -b --force"
+    "typecheck": "npm run sync-fixture && tsc -b --force"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",

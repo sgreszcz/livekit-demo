@@ -1,3 +1,5 @@
+# Identity of THIS deployment (cockpit.agentmaker.io). If you fork the repo,
+# delete this file and run `lk agent create` to mint your own project/agent ids.
 [project]
   subdomain = "livekik-rbhzpdof"
 
