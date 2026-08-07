@@ -16,7 +16,7 @@ tested against.
 ```json
 {
   "v": 1,
-  "type": "turn | transcript | state | interruption | usage | chaos | call_meta",
+  "type": "turn | transcript | state | interruption | usage | chaos | call_meta | transport",
   "ts": 1723000000.123,          // unix seconds, agent clock, float
   "speech_id": "abc123",         // present where the SDK provides one
   "payload": { ... }             // type-specific, see below
@@ -55,7 +55,10 @@ Semantics that both sides MUST honor:
   bar width disagrees with the printed `total_response_latency` is a bug.
 - **Tool-calling turns run the LLM more than once.** `llm` reports the *chain*:
   `llm_calls` = number of invocations (OPTIONAL — consumers MUST read a missing
-  value as 1), `prompt_tokens`/`completion_tokens` are summed,
+  value as 1), an OPTIONAL `chain` array (`[{ "ttft": 0.4, "duration": 1.1 }, …]`,
+  one entry per invocation in order, emitted when `llm_calls > 1`) lets the
+  frontend show the per-invocation breakdown, `prompt_tokens`/`completion_tokens`
+  are summed,
   `duration` is the summed chain duration, and `ttft` is the *effective perceived*
   first token — Σ durations of all invocations before the last, plus the last
   invocation's ttft. (Tool execution time between invocations is not measured by the
@@ -96,12 +99,33 @@ Interim user transcripts have `"final": false` and may repeat; frontend replaces
 { "llm_delay_ms": 800, "active": true }
 ```
 
+### `transport` — browser-sourced WebRTC transport samples (v1.1)
+Unlike every other type, `transport` envelopes are created BY THE COCKPIT ITSELF
+(the agent never sees the caller's network path): the browser samples
+`livekit-client` `getStats()` roughly every 2 s and feeds the envelope into the
+same store as remote telemetry. They are never sent over the data channel, and
+appear only in browser-posted debriefs.
+
+```json
+{ "rtt_ms": 48, "jitter_ms": 4.1, "packet_loss_pct": 0.0, "quality": "excellent | good | poor | lost | unknown" }
+```
+
 ### `call_meta` — once, on agent join
 ```json
 { "call_id": "rm_xyz", "room": "cockpit-...", "started_at": 1723000000.0,
   "pipeline": { "stt": "deepgram/nova-3", "llm": "...", "tts": "cartesia/sonic-3" },
   "entry": "browser | sip" }
 ```
+
+## Observers (v1.2)
+
+A participant whose identity starts with `observer-` is a read-only viewer (subscribe
+only, no mic, no data publishing — enforced by its token grants). When one joins
+mid-call, the agent replays every envelope emitted so far, in original order,
+byte-identical, via `publish_data(..., destination_identities=[<observer>])` —
+**addressed to that observer only**, so the caller's own cockpit never receives
+duplicates. Observers then receive live envelopes exactly like the caller does.
+The snapshot is a retransmission, not an emission: it does not appear in debriefs.
 
 ## Control channel (browser → agent, topic `cockpit-control`)
 

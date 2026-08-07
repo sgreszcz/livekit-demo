@@ -58,7 +58,17 @@ def assert_valid_envelope(env: dict) -> None:
                 assert isinstance(payload[stage], dict)
         # llm_calls is optional on the wire (absent means one); when present it counts.
         if "llm" in payload and "llm_calls" in payload["llm"]:
-            assert payload["llm"]["llm_calls"] >= 1
+            llm = payload["llm"]
+            assert llm["llm_calls"] >= 1
+            # `chain` is optional, and the schema emits it only for a multi-call turn.
+            if llm["llm_calls"] > 1:
+                assert len(llm["chain"]) == llm["llm_calls"]
+                for call in llm["chain"]:
+                    assert set(call) == {"ttft", "duration"}
+                    assert isinstance(call["ttft"], float)
+                    assert isinstance(call["duration"], float)
+            else:
+                assert "chain" not in llm
         if "total_response_latency" in payload:
             assert isinstance(payload["total_response_latency"], float)
             assert isinstance(payload["degraded"], bool)
@@ -230,6 +240,53 @@ def test_tool_calling_turn_reports_the_whole_llm_chain(store: TurnStore) -> None
     usage = store.usage_payload()
     assert usage["llm_prompt_tokens"] == 300
     assert usage["llm_completion_tokens"] == 30
+
+
+def test_a_single_call_turn_carries_no_chain_array(store: TurnStore) -> None:
+    """`chain` would only restate ttft/duration for the common case, so it is omitted."""
+    store.record_eou("t1", end_of_utterance_delay=0.40, transcription_delay=0.10)
+    env = store.record_llm("t1", ttft=0.30, duration=0.50, prompt_tokens=100, completion_tokens=10)
+    assert "chain" not in env["payload"]["llm"]
+    assert_valid_envelope(env)
+
+
+def test_a_tool_calling_turn_breaks_the_chain_down_per_invocation(store: TurnStore) -> None:
+    """The summed block hides where the time went; `chain` is how the cockpit shows it.
+
+    Two invocations of 0.50 s and 1.50 s produce the same 1.40 s effective ttft as one
+    slow call would — only the per-invocation entries distinguish them.
+    """
+    store.record_eou("t1", end_of_utterance_delay=0.40, transcription_delay=0.10)
+    store.record_llm("t1", ttft=0.30, duration=0.50, prompt_tokens=100, completion_tokens=10)
+    env = store.record_llm("t1", ttft=0.90, duration=1.50, prompt_tokens=200, completion_tokens=20)
+
+    llm = env["payload"]["llm"]
+    # Invocation order, raw per-call values — not the collapsed perceived ttft.
+    assert llm["chain"] == [
+        {"ttft": 0.30, "duration": 0.50},
+        {"ttft": 0.90, "duration": 1.50},
+    ]
+    assert llm["ttft"] == pytest.approx(1.40)
+    assert_valid_envelope(env)
+
+    third = store.record_llm("t1", ttft=0.20, duration=0.40, prompt_tokens=50, completion_tokens=5)
+    assert third["payload"]["llm"]["chain"][-1] == {"ttft": 0.20, "duration": 0.40}
+    assert len(third["payload"]["llm"]["chain"]) == 3
+
+
+def test_chain_entries_are_rounded_like_every_other_duration(store: TurnStore) -> None:
+    """Float noise off the SDK must not reach the wire — `_r` applies here too."""
+    store.record_eou("t1", end_of_utterance_delay=0.40, transcription_delay=0.10)
+    store.record_llm(
+        "t1", ttft=0.1234567, duration=0.5000004, prompt_tokens=100, completion_tokens=10
+    )
+    env = store.record_llm(
+        "t1", ttft=0.9876543, duration=1.5000009, prompt_tokens=200, completion_tokens=20
+    )
+    assert env["payload"]["llm"]["chain"] == [
+        {"ttft": 0.123, "duration": 0.5},
+        {"ttft": 0.988, "duration": 1.5},
+    ]
 
 
 def test_a_later_invocation_corrects_an_already_published_total(store: TurnStore) -> None:
@@ -814,3 +871,60 @@ def test_greeting_transcript_attaches_to_the_agent_initiated_turn(store: TurnSto
     assert env is not None
     assert env["payload"]["turn_id"] == "speech_greeting"
     assert store.get("speech_greeting").agent_text == "Welcome to Glass Cockpit."
+
+
+def test_spoken_greeting_produces_a_tts_only_turn(store: TurnStore) -> None:
+    """``session.say()`` skips the model, so the greeting turn has TTS and nothing else.
+
+    The agent now opens with fixed text rather than a generated reply, which means the
+    only metric the turn ever gets is TTS — there is no LLM invocation to create it and
+    no end-of-utterance to name it. The schema calls this a partial, agent-initiated
+    turn: no ``eou``, no ``stt``, no ``llm``, and never a ``total_response_latency``.
+    """
+    env = store.record_tts(
+        "speech_greeting", ttfb=0.18, duration=1.9, audio_duration=3.4, characters_count=214
+    )
+
+    assert env is not None
+    assert env["speech_id"] == "speech_greeting"
+    payload = env["payload"]
+    assert payload["tts"]["ttfb"] == 0.18
+    assert "total_response_latency" not in payload
+    assert not {"eou", "stt", "llm"} & payload.keys()
+
+    turn = store.get("speech_greeting")
+    assert turn is not None
+    assert (turn.eou, turn.stt, turn.llm) == (None, None, None)
+    assert turn.total_response_latency is None
+    # A turn with no measurable critical path is not a latency sample.
+    assert store.completed_turns == []
+
+
+def test_spoken_greeting_transcript_attaches_without_any_llm_metrics(store: TurnStore) -> None:
+    """The transcript's fallback home used to be the turn the greeting's own *LLM*
+    metrics created. Under ``say()`` there are none, so TTS has to be enough."""
+    store.record_tts(
+        "speech_greeting", ttfb=0.18, duration=1.9, audio_duration=3.4, characters_count=214
+    )
+    env = store.record_agent_transcript("Welcome to Glass Cockpit.")
+
+    assert env is not None
+    assert env["payload"] == {
+        "role": "agent",
+        "text": "Welcome to Glass Cockpit.",
+        "final": True,
+        "turn_id": "speech_greeting",
+    }
+
+
+def test_spoken_greeting_bills_tts_but_no_llm_tokens(store: TurnStore) -> None:
+    """The saving is real, not just perceived: no completion is paid for."""
+    store.record_tts(
+        "speech_greeting", ttfb=0.18, duration=1.9, audio_duration=3.4, characters_count=214
+    )
+    usage = store.record_usage()["payload"]
+
+    assert usage["tts_characters"] == 214
+    assert usage["llm_prompt_tokens"] == 0
+    assert usage["llm_completion_tokens"] == 0
+    assert usage["est_cost_usd"] > 0

@@ -16,6 +16,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { CockpitBoard } from './CockpitBoard';
 import { ConnectionInfo } from './ConnectionInfo';
 import { StateStrip, stateBreakdown } from './StateStrip';
+import { TransportLamp, TransportPanel } from './TransportPanel';
+import { TurnDetail } from './TurnDetail';
 import { Waterfall, axisScale } from './Waterfall';
 import fixture from '../fixtures/sample-call.jsonl?raw';
 import type { CallMetaPayload } from '../telemetry/schema';
@@ -27,7 +29,7 @@ import {
   reduceAll,
   turnWaterfall,
 } from '../telemetry/store';
-import type { CockpitState, Turn } from '../telemetry/store';
+import type { CockpitState, TransportSample, Turn } from '../telemetry/store';
 
 const fixtureState = reduceAll(parseEnvelopeLines(fixture));
 
@@ -227,6 +229,16 @@ describe('Waterfall', () => {
     assertRenders(renderToStaticMarkup(<Waterfall turns={[bareTurn]} />));
   });
 
+  it('makes every turn row a collapsed toggle rather than inert text', () => {
+    const markup = renderToStaticMarkup(<Waterfall turns={fixtureState.turns} />);
+    // Seven turns, seven buttons, all closed on first paint.
+    expect(markup.match(/aria-expanded="false"/g) ?? []).toHaveLength(7);
+    expect(markup).not.toContain('aria-expanded="true"');
+    // The drawer is unmounted while closed, so nothing may claim to control it.
+    expect(markup).not.toContain('aria-controls');
+    expect(markup).not.toContain('wf-drawer');
+  });
+
   it('renders a turn that has only half a pipeline', () => {
     const halfTurn: Turn = {
       ...bareTurn,
@@ -243,5 +255,160 @@ describe('Waterfall', () => {
     const markup = renderToStaticMarkup(<Waterfall turns={[halfTurn]} />);
     assertRenders(markup);
     expect(markup).toContain('×4');
+  });
+});
+
+/**
+ * The drawer is rendered directly rather than clicked open: these tests run
+ * without a DOM, and what is being asserted is that a real turn produces real
+ * figures — not that React toggles state.
+ */
+describe('TurnDetail', () => {
+  /** t1 of the fixture: a complete caller turn with every stage reported. */
+  const turn = fixtureState.turns[1];
+
+  it('prints every stage of a fixture turn in milliseconds', () => {
+    const markup = renderToStaticMarkup(<TurnDetail turn={turn} />);
+    assertRenders(markup);
+
+    expect(markup).toContain('410 ms'); // eou.end_of_utterance_delay 0.41
+    expect(markup).toContain('120 ms'); // eou.transcription_delay 0.12
+    expect(markup).toContain('340 ms'); // llm.ttft 0.34
+    expect(markup).toContain('190 ms'); // tts.ttfb 0.19
+    expect(markup).toContain('940 ms'); // total_response_latency 0.94
+  });
+
+  it('prints the token detail and the audio durations', () => {
+    const markup = renderToStaticMarkup(<TurnDetail turn={turn} />);
+    expect(markup).toContain('820'); // prompt tokens
+    expect(markup).toContain('58'); // completion tokens
+    expect(markup).toContain('52.7 tok/s');
+    expect(markup).toContain('3.1s'); // stt.audio_duration
+    expect(markup).toContain('4.2s'); // tts.audio_duration
+    expect(markup).toContain('gpt-4.1-mini');
+  });
+
+  it('reads a missing llm_calls as a single invocation', () => {
+    // The contract says an absent count means one; printing a dash would imply
+    // the agent failed to report rather than that it called the model once.
+    expect(turn.llm?.llm_calls).toBeUndefined();
+    expect(renderToStaticMarkup(<TurnDetail turn={turn} />)).toContain('>1<');
+  });
+
+  it('flags the degraded turn and the barge-in', () => {
+    const degraded = renderToStaticMarkup(<TurnDetail turn={fixtureState.turns[3]} />);
+    expect(degraded).toContain('Chaos degraded');
+
+    const bargedIn = renderToStaticMarkup(<TurnDetail turn={fixtureState.turns[4]} />);
+    expect(bargedIn).toContain('Barge-in');
+  });
+
+  it('draws one mini-bar per invocation when the chain is present', () => {
+    const chained: Turn = {
+      ...turn,
+      llm: {
+        ttft: 1.5,
+        duration: 2.4,
+        prompt_tokens: 900,
+        completion_tokens: 60,
+        tokens_per_second: 48,
+        llm_calls: 3,
+        chain: [
+          { ttft: 0.4, duration: 0.9 },
+          { ttft: 0.3, duration: 0.6 },
+          { ttft: 0.8, duration: 0.9 },
+        ],
+        model: 'openai/gpt-4.1-mini',
+      },
+    };
+
+    const markup = renderToStaticMarkup(<TurnDetail turn={chained} />);
+    assertRenders(markup);
+    expect(markup.match(/chain__row/g) ?? []).toHaveLength(3);
+    expect(markup).toContain('#3');
+    // Widths are a share of the longest invocation, never a raw second count.
+    expect(markup).not.toContain('width="0.9"');
+  });
+
+  it('renders a turn with no metrics at all as dashes, not blanks', () => {
+    const bare: Turn = {
+      turnId: 'x',
+      index: 0,
+      degraded: false,
+      interruptions: [],
+      firstTs: 0,
+      lastTs: 0,
+    };
+    const markup = renderToStaticMarkup(<TurnDetail turn={bare} />);
+    assertRenders(markup);
+    expect(markup).toContain('—');
+  });
+
+  it('survives an llm block whose chain is present but empty', () => {
+    const empty: Turn = {
+      ...turn,
+      llm: { ...turn.llm!, llm_calls: 2, chain: [] },
+    };
+    assertRenders(renderToStaticMarkup(<TurnDetail turn={empty} />));
+  });
+});
+
+describe('TransportPanel', () => {
+  const sample = (ts: number, rttMs?: number): TransportSample => ({
+    ts,
+    quality: 'good',
+    ...(rttMs !== undefined ? { rttMs, jitterMs: 4.1, lossPct: 0.4 } : null),
+  });
+
+  it('says so plainly when a recording carries no transport at all', () => {
+    // The fixture is exactly this case, and it is the common one: transport is
+    // measured in the caller's browser, so no phone call will ever have it.
+    const markup = renderToStaticMarkup(<TransportPanel samples={[]} live={false} />);
+    assertRenders(markup);
+    expect(markup).toContain('Not recorded on this call');
+  });
+
+  it('distinguishes a live call that has not sampled yet from one that never will', () => {
+    const markup = renderToStaticMarkup(<TransportPanel samples={[]} live />);
+    expect(markup).toContain('Measuring the connection');
+    expect(markup).not.toContain('Not recorded');
+  });
+
+  it('prints the newest reading and draws the series behind it', () => {
+    const markup = renderToStaticMarkup(
+      <TransportPanel samples={[sample(1, 40), sample(2, 44), sample(3, 48)]} live />,
+    );
+    assertRenders(markup);
+    expect(markup).toContain('48');
+    expect(markup).toContain('4.1');
+    expect(markup).toContain('0.4');
+    expect(markup).toContain('polyline');
+  });
+
+  it('renders a quality-only series without inventing figures', () => {
+    // The documented fallback: no numbers, and the panel still stands up.
+    const markup = renderToStaticMarkup(
+      <TransportPanel samples={[sample(1), sample(2)]} live />,
+    );
+    assertRenders(markup);
+    expect(markup).toContain('—');
+    // Nothing to plot, so the baseline stands in for a line.
+    expect(markup).not.toContain('polyline');
+    expect(markup).toContain('spark__flat');
+  });
+
+  it('draws no line from a single reading', () => {
+    const markup = renderToStaticMarkup(<TransportPanel samples={[sample(1, 40)]} live />);
+    assertRenders(markup);
+    expect(markup).toContain('40');
+    expect(markup).not.toContain('polyline');
+  });
+
+  it('lights the lamp for every quality the SDK can report', () => {
+    for (const quality of ['excellent', 'good', 'poor', 'lost', 'unknown'] as const) {
+      const markup = renderToStaticMarkup(<TransportLamp quality={quality} />);
+      assertRenders(markup);
+      expect(markup).toContain('lamp');
+    }
   });
 });

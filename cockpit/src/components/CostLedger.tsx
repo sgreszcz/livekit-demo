@@ -5,9 +5,16 @@
  */
 
 import type { UsagePayload } from '../telemetry/schema';
+import { costPerMinute } from '../telemetry/store';
 import { duration, integer, usd } from '../format';
 
-export function CostLedger({ usage }: { usage: UsagePayload | null }) {
+interface CostLedgerProps {
+  usage: UsagePayload | null;
+  /** Wall-clock length of the call so far — the denominator of the rate. */
+  elapsedSeconds: number;
+}
+
+export function CostLedger({ usage, elapsedSeconds }: CostLedgerProps) {
   const totals = usage ?? {
     llm_prompt_tokens: 0,
     llm_completion_tokens: 0,
@@ -15,6 +22,10 @@ export function CostLedger({ usage }: { usage: UsagePayload | null }) {
     tts_characters: 0,
     est_cost_usd: 0,
   };
+
+  // Null for the first few seconds of a call: dividing a rounding error by a
+  // fraction of a minute produces a rate nobody should quote.
+  const rate = costPerMinute(usage, elapsedSeconds);
 
   return (
     <div>
@@ -29,6 +40,11 @@ export function CostLedger({ usage }: { usage: UsagePayload | null }) {
             {usd(totals.est_cost_usd)}
             <small>USD</small>
           </div>
+          {rate !== null ? (
+            <div className="ledger__sub num">
+              {usd(rate)} <span>per minute of call</span>
+            </div>
+          ) : null}
         </div>
       </div>
       <p className="ledger__caveat">

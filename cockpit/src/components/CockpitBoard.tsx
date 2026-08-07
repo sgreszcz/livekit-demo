@@ -11,12 +11,23 @@ import { Transcript } from './Transcript';
 import { CostLedger } from './CostLedger';
 import { ConnectionInfo } from './ConnectionInfo';
 import { ChaosControl } from './ChaosControl';
-import { callDurationSeconds, type CockpitState } from '../telemetry/store';
+import { TransportLamp, TransportPanel } from './TransportPanel';
+import {
+  callDurationSeconds,
+  interruptionTotals,
+  latencyAggregates,
+  latestTransport,
+  type CockpitState,
+  type InterruptionTotals,
+  type LatencyAggregates,
+} from '../telemetry/store';
 import { duration, ms } from '../format';
 
 export interface ChaosControls {
   delayMs: number;
   disabled: boolean;
+  /** Overrides the disabled-state copy where the usual reason does not apply. */
+  note?: string;
   onChange: (delayMs: number) => void;
 }
 
@@ -24,14 +35,21 @@ interface CockpitBoardProps {
   state: CockpitState;
   /** Live calls and replays follow the transcript tail; debriefs do not. */
   follow: boolean;
+  /**
+   * True only while this browser is actually on the call. A replay follows the
+   * tail like a live call does but records nothing, so `follow` cannot stand in
+   * for this — the transport panel needs to know whether missing samples are
+   * still coming or never existed.
+   */
+  live?: boolean;
   chaos?: ChaosControls;
 }
 
-export function CockpitBoard({ state, follow, chaos }: CockpitBoardProps) {
+export function CockpitBoard({ state, follow, live = false, chaos }: CockpitBoardProps) {
   const elapsed = callDurationSeconds(state);
-  const measured = state.turns.filter((turn) => turn.totalResponseLatency !== undefined);
-  const median = medianLatency(measured.map((turn) => turn.totalResponseLatency!));
-  const worst = measured.reduce((max, turn) => Math.max(max, turn.totalResponseLatency!), 0);
+  const latency = latencyAggregates(state.turns);
+  const interruptions = interruptionTotals(state.turns);
+  const transport = latestTransport(state);
 
   return (
     <div className="cockpit">
@@ -50,15 +68,22 @@ export function CockpitBoard({ state, follow, chaos }: CockpitBoardProps) {
           <Panel
             legend="Response latency · per turn"
             aside={
-              measured.length > 0
-                ? `median ${ms(median)} ms · worst ${ms(worst)} ms`
+              latency.measured > 0
+                ? latencyReadout(latency)
                 : `${state.turns.length} turns`
             }
+            asideWrap
           >
             <Waterfall turns={state.turns} />
           </Panel>
 
-          <Panel legend="Transcript" aside={`${state.transcript.length} lines`}>
+          {/* Interruptions live here rather than on the waterfall head: a
+              barge-in is a thing the caller said over the agent, and it reads
+              as conversation, not as latency. */}
+          <Panel
+            legend="Transcript"
+            aside={`${state.transcript.length} lines${interruptionReadout(interruptions)}`}
+          >
             <Transcript lines={state.transcript} turns={state.turns} follow={follow} />
           </Panel>
         </div>
@@ -72,6 +97,13 @@ export function CockpitBoard({ state, follow, chaos }: CockpitBoardProps) {
             />
           </Panel>
 
+          <Panel
+            legend="Transport"
+            aside={transport ? <TransportLamp quality={transport.quality} /> : undefined}
+          >
+            <TransportPanel samples={state.transport} live={live} />
+          </Panel>
+
           {chaos ? (
             <Panel
               legend="Chaos injection"
@@ -81,13 +113,14 @@ export function CockpitBoard({ state, follow, chaos }: CockpitBoardProps) {
                 delayMs={chaos.delayMs}
                 acknowledged={state.chaos.active && state.chaos.llmDelayMs === chaos.delayMs}
                 disabled={chaos.disabled}
+                disabledNote={chaos.note}
                 onChange={chaos.onChange}
               />
             </Panel>
           ) : null}
 
           <Panel legend="Cost ledger" collapsible>
-            <CostLedger usage={state.usage} />
+            <CostLedger usage={state.usage} elapsedSeconds={elapsed} />
           </Panel>
         </div>
       </div>
@@ -95,9 +128,25 @@ export function CockpitBoard({ state, follow, chaos }: CockpitBoardProps) {
   );
 }
 
-function medianLatency(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+/**
+ * The one-line summary of the whole waterfall. `p95` appears only once there
+ * are enough turns for it to mean anything, and the over-budget count is
+ * printed as a fraction because "2 over budget" is a very different call
+ * depending on whether it was 2 of 3 or 2 of 60.
+ */
+function latencyReadout(latency: LatencyAggregates): string {
+  const parts = [`median ${ms(latency.median)} ms`];
+  if (latency.p95 !== null) parts.push(`p95 ${ms(latency.p95)} ms`);
+  parts.push(`worst ${ms(latency.worst)} ms`);
+  parts.push(`${latency.overBudget} of ${latency.measured} over budget`);
+  return parts.join(' · ');
+}
+
+function interruptionReadout({ bargeIns, falseInterruptions }: InterruptionTotals): string {
+  const parts: string[] = [];
+  if (bargeIns > 0) parts.push(`${bargeIns} barge-in${bargeIns === 1 ? '' : 's'}`);
+  if (falseInterruptions > 0) {
+    parts.push(`${falseInterruptions} false interruption${falseInterruptions === 1 ? '' : 's'}`);
+  }
+  return parts.length > 0 ? ` · ${parts.join(' · ')}` : '';
 }

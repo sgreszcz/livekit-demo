@@ -1,0 +1,428 @@
+{
+  "__comment": "Glass Cockpit fleet dashboard. Hand-written, not exported — keep it that way: every panel below reads the same GET ${endpoint} document, so adding a panel means adding a root_selector and some columns, not re-exporting 5000 lines from a UI.",
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["glass-cockpit", "livekit", "voice-agents"],
+  "time": { "from": "now-14d", "to": "now" },
+  "timezone": "utc",
+  "title": "Glass Cockpit — voice agent fleet",
+  "uid": "glass-cockpit-fleet",
+  "version": 1,
+  "weekStart": "",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Infinity datasource",
+        "query": "yesoreyeram-infinity-datasource",
+        "current": {},
+        "options": [],
+        "refresh": 1,
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "regex": "",
+        "skipUrlSync": false
+      },
+      {
+        "type": "textbox",
+        "name": "endpoint",
+        "label": "Metrics URL",
+        "description": "Your Worker's /api/metrics. Public, read-only, cached 60s.",
+        "query": "https://cockpit.agentmaker.io/api/metrics",
+        "current": {
+          "text": "https://cockpit.agentmaker.io/api/metrics",
+          "value": "https://cockpit.agentmaker.io/api/metrics"
+        },
+        "options": [],
+        "hide": 0,
+        "__comment": "skipUrlSync is load-bearing, not tidiness. Every panel's query URL is this variable, and Infinity answers an empty URL with zero frames and NO error — so a single `var-endpoint=` in the address bar blanks all eight panels with nothing to diagnose. URL-syncing a textbox is what puts an empty value there in the first place (Grafana writes variables into the URL on load, and a link shared or bookmarked from that moment carries the empty forever). Unsynced, the saved value always wins and the dashboard cannot be blanked from outside.",
+        "skipUrlSync": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Calls per day",
+      "description": "Completed calls bucketed by UTC day, last 14 days. The endpoint always returns 14 buckets, so a quiet day is a zero rather than a gap.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "barAlignment": 0,
+            "axisSoftMax": 5
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "hidden", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "timeseries",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "calls_per_day",
+          "columns": [
+            { "selector": "time", "text": "time", "type": "timestamp_epoch" },
+            { "selector": "value", "text": "calls", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Fleet",
+      "description": "Totals over the debriefs this response read. `sampled: true` in the raw JSON means there were more stored than the 200-debrief read cap.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Avg call length" },
+            "properties": [{ "id": "unit", "value": "s" }]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "renameByName": {},
+            "indexByName": { "Calls": 0, "Turns": 1, "Turns / call": 2, "Avg call length": 3 }
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "calls_total", "text": "Calls", "type": "number" },
+            { "selector": "turns_completed", "text": "Turns", "type": "number" },
+            { "selector": "avg_turns_per_call", "text": "Turns / call", "type": "number" },
+            { "selector": "avg_call_seconds", "text": "Avg call length", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Response latency (perceived critical path)",
+      "description": "end_of_utterance_delay + llm.ttft + tts.ttfb, pooled across every completed turn in the sample. Not a per-call average of averages.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "__comment": "No `decimals` here on purpose. Grafana's ms unit auto-scales past a second, so decimals:0 rendered a 4600 ms p95 as a flat \"5 s\" — and a p50 of 1040 ms as \"1 s\", which reads as if the fleet were exactly on budget. Automatic decimals give \"4.60 s\" and \"1.04 s\".",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1000 },
+              { "color": "red", "value": 2000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "renameByName": {},
+            "__comment": "Infinity's backend parser returns fields in alphabetical order, which puts `max` first and reads as a latency row with the worst number leading. Pin the percentile order.",
+            "indexByName": { "p50": 0, "p95": 1, "max": 2 }
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "latency_p50_ms", "text": "p50", "type": "number" },
+            { "selector": "latency_p95_ms", "text": "p95", "type": "number" },
+            { "selector": "latency_max_ms", "text": "max", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Where the time goes (avg per turn)",
+      "description": "The three stages on the critical path. They do not sum to p50 — this is the mean of each stage, and the stages overlap in real time.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "color": { "mode": "fixed", "fixedColor": "super-light-blue" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "super-light-blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": true },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "stages",
+          "columns": [
+            { "selector": "stage", "text": "stage", "type": "string" },
+            { "selector": "ms", "text": "avg", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "gauge",
+      "title": "Turns over 1s budget",
+      "description": "Share of completed turns whose perceived latency exceeded one second.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 25 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [{ "selector": "over_budget_pct", "text": "Over budget", "type": "number" }]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "gauge",
+      "title": "Degraded turns",
+      "description": "Turns that ran with chaos mode injecting model latency. On a demo fleet this is expected to be non-zero.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [{ "selector": "degraded_pct", "text": "Degraded", "type": "number" }]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Estimated spend",
+      "description": "Summed per-call estimates from the agent's price table. An estimate, not a bill.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3,
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Tokens" },
+            "properties": [
+              { "id": "unit", "value": "short" },
+              { "id": "decimals", "value": 0 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "est_cost_usd", "text": "Cost", "type": "number" },
+            { "selector": "tokens_completion", "text": "Tokens", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Barge-ins",
+      "description": "Turns the caller interrupted, counted once per turn.",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "yellow" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "yellow", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${datasource}" },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "${endpoint}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "barge_in_total", "text": "Barge-ins", "type": "number" },
+            { "selector": "calls_entry_sip", "text": "SIP calls", "type": "number" }
+          ]
+        }
+      ]
+    }
+  ]
+}

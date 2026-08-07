@@ -1,15 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import fixture from '../fixtures/sample-call.jsonl?raw';
 import { isEnvelope } from './schema';
-import type { Envelope } from './schema';
+import type { Envelope, TransportPayload } from './schema';
 import {
   LATENCY_BUDGET_SECONDS,
   MAX_LOG_ENVELOPES,
+  MAX_TRANSPORT_SAMPLES,
+  MIN_RATE_SECONDS,
+  P95_MIN_TURNS,
   appendToLog,
   callDurationSeconds,
+  costPerMinute,
   createCockpitState,
   currentAgentState,
   emptyLog,
+  interruptionTotals,
+  latencyAggregates,
+  latestTransport,
   parseEnvelopeLines,
   reduceAll,
   reduceEnvelope,
@@ -357,6 +364,151 @@ describe('envelope log', () => {
     const b = createCockpitState();
     expect(a.log.entries).toHaveLength(1);
     expect(b.log.entries).toHaveLength(0);
+  });
+});
+
+describe('transport series', () => {
+  const sample = (ts: number, payload: TransportPayload): Envelope => ({
+    v: 1,
+    type: 'transport',
+    ts,
+    payload,
+  });
+
+  it('is empty for the shipped fixture, which recorded none', () => {
+    // The fixture predates transport sampling and every SIP call always will —
+    // the panel has to treat an absent series as a fact, not as a failure.
+    expect(state.transport).toEqual([]);
+  });
+
+  it('folds a reading into the series', () => {
+    const folded = reduceAll([
+      sample(10, { rtt_ms: 48, jitter_ms: 4.1, packet_loss_pct: 0.4, quality: 'good' }),
+    ]);
+    expect(folded.transport).toEqual([
+      { ts: 10, rttMs: 48, jitterMs: 4.1, lossPct: 0.4, quality: 'good' },
+    ]);
+  });
+
+  it('leaves a figure the sample never read absent rather than zero', () => {
+    // A muted microphone did not measure 0 ms of round trip, and a sparkline
+    // that cannot tell those apart plots a cliff that never happened.
+    const folded = reduceAll([sample(10, { quality: 'lost' })]);
+    expect(folded.transport[0]).toEqual({ ts: 10, quality: 'lost' });
+    expect('rttMs' in folded.transport[0]).toBe(false);
+    expect('lossPct' in folded.transport[0]).toBe(false);
+  });
+
+  it('bounds the series, keeping the most recent readings', () => {
+    const envelopes: Envelope[] = [];
+    for (let i = 0; i < MAX_TRANSPORT_SAMPLES + 120; i += 1) {
+      envelopes.push(sample(i, { rtt_ms: i, quality: 'good' }));
+    }
+    const folded = reduceAll(envelopes);
+
+    expect(folded.transport).toHaveLength(MAX_TRANSPORT_SAMPLES);
+    // Oldest evicted, newest kept: a transport panel is about now.
+    expect(folded.transport[0].rttMs).toBe(120);
+    expect(folded.transport[folded.transport.length - 1].rttMs).toBe(
+      MAX_TRANSPORT_SAMPLES + 119,
+    );
+  });
+
+  it('drops malformed readings at ingest rather than plotting them', () => {
+    const parsed = parseEnvelopeLines(
+      [
+        '{"v":1,"type":"transport","ts":1,"payload":{"rtt_ms":48,"quality":"good"}}',
+        // No quality: not a reading.
+        '{"v":1,"type":"transport","ts":2,"payload":{"rtt_ms":50}}',
+        // Figures that would poison a y-scale.
+        '{"v":1,"type":"transport","ts":3,"payload":{"quality":"good","rtt_ms":-4}}',
+        '{"v":1,"type":"transport","ts":4,"payload":{"quality":"good","packet_loss_pct":900}}',
+        '{"v":1,"type":"transport","ts":5,"payload":{"quality":"marginal"}}',
+        '{"v":1,"type":"transport","ts":6,"payload":{"quality":"lost"}}',
+      ].join('\n'),
+    );
+
+    const folded = reduceAll(parsed);
+    expect(folded.transport.map((entry) => entry.ts)).toEqual([1, 6]);
+  });
+
+  it('reports the newest reading, or null when there is none', () => {
+    expect(latestTransport(createCockpitState())).toBeNull();
+    const folded = reduceAll([sample(1, { quality: 'good' }), sample(2, { quality: 'poor' })]);
+    expect(latestTransport(folded)?.quality).toBe('poor');
+  });
+
+  it('survives a StrictMode double-invocation without duplicating a reading', () => {
+    const envelope = sample(1, { quality: 'good' });
+    const base = createCockpitState();
+    expect(reduceEnvelope(base, envelope).transport).toHaveLength(1);
+    expect(reduceEnvelope(base, envelope).transport).toHaveLength(1);
+  });
+});
+
+describe('session aggregates', () => {
+  const aggregates = latencyAggregates(state.turns);
+
+  it('measures only the turns the agent computed a latency for', () => {
+    // The greeting has no caller wait, so it is not in the denominator.
+    expect(aggregates.measured).toBe(6);
+    expect(state.turns).toHaveLength(7);
+  });
+
+  it('takes the median of the six completed turns', () => {
+    // sorted: 0.90 0.94 0.97 | 1.16 1.77 1.81 -> (0.97 + 1.16) / 2
+    expect(aggregates.median).toBeCloseTo(1.065, 6);
+  });
+
+  it('reports p95 by nearest rank, which at six samples is the worst turn', () => {
+    // ceil(0.95 * 6) = 6, so the 95th percentile IS the slowest turn here.
+    // That is the honest answer at this sample size, not a rounding artefact.
+    expect(aggregates.p95).toBeCloseTo(1.81, 6);
+    expect(aggregates.p95).toBe(aggregates.worst);
+  });
+
+  it('withholds p95 until there are enough turns to mean anything', () => {
+    const turnsWith = (count: number) =>
+      state.turns.filter((turn) => turn.totalResponseLatency !== undefined).slice(0, count);
+
+    expect(latencyAggregates(turnsWith(P95_MIN_TURNS - 1)).p95).toBeNull();
+    expect(latencyAggregates(turnsWith(P95_MIN_TURNS)).p95).not.toBeNull();
+    expect(latencyAggregates([]).p95).toBeNull();
+  });
+
+  it('counts the turns that ran past the budget', () => {
+    // 1.16, 1.77 and 1.81 are over 1.0s; 0.90, 0.94 and 0.97 are not.
+    expect(aggregates.overBudget).toBe(3);
+    expect(aggregates.worst).toBeCloseTo(1.81, 6);
+  });
+
+  it('reports zeroes rather than NaN for a call with no turns', () => {
+    const empty = latencyAggregates([]);
+    expect(empty).toEqual({ measured: 0, median: 0, p95: null, worst: 0, overBudget: 0 });
+  });
+
+  it('counts the fixture barge-in and no false interruptions', () => {
+    expect(interruptionTotals(state.turns)).toEqual({
+      bargeIns: 1,
+      falseInterruptions: 0,
+      total: 1,
+    });
+  });
+
+  it('derives a spend rate from the running total and the elapsed call', () => {
+    // $0.022 over 49.5s -> $0.022 / 0.825 min.
+    const rate = costPerMinute(state.usage, callDurationSeconds(state));
+    expect(rate).not.toBeNull();
+    expect(rate!).toBeCloseTo(0.022 / (49.5 / 60), 9);
+    expect(rate!).toBeCloseTo(0.02667, 5);
+  });
+
+  it('refuses to extrapolate a rate from a call too short to have one', () => {
+    // A tenth of a second of call would report six hundred times its own cost.
+    expect(costPerMinute(state.usage, MIN_RATE_SECONDS - 0.001)).toBeNull();
+    expect(costPerMinute(state.usage, 0)).toBeNull();
+    expect(costPerMinute(state.usage, NaN)).toBeNull();
+    expect(costPerMinute(null, 600)).toBeNull();
   });
 });
 

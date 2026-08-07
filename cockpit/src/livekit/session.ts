@@ -5,17 +5,26 @@
  *
  * Everything the UI needs arrives as an `Envelope`, identical in shape to a
  * fixture replay or a stored debrief.
+ *
+ * Two ways in: `connect` places a call and publishes a microphone, `observe`
+ * joins someone else's call on a read-only token and publishes nothing.
  */
 
 import {
   RoomEvent,
   Room,
   Track,
+  type Participant,
   type RemoteTrack,
   type RemoteTrackPublication,
 } from 'livekit-client';
 import { CONTROL_TOPIC, SCHEMA_VERSION, TELEMETRY_TOPIC, isEnvelope } from '../telemetry/schema';
-import type { ChaosControlMessage, Envelope } from '../telemetry/schema';
+import type {
+  ChaosControlMessage,
+  Envelope,
+  TransportPayload,
+  TransportQuality,
+} from '../telemetry/schema';
 
 export interface TokenResponse {
   token: string;
@@ -31,11 +40,110 @@ export interface SessionCallbacks {
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-async function fetchToken(): Promise<TokenResponse> {
+/* ── Transport sampling ────────────────────────────────────────────────────
+ *
+ * Nothing the agent sends describes the caller's own network path, so the
+ * cockpit measures it here and feeds the result into the same store through the
+ * same envelope shape. These envelopes are never published on the data channel;
+ * they exist locally and travel only in a debrief this browser posts.
+ */
+
+const TRANSPORT_SAMPLE_MS = 2000;
+
+const TRANSPORT_QUALITIES: readonly string[] = ['excellent', 'good', 'poor', 'lost', 'unknown'];
+
+/**
+ * The stats we want out of the SDK, described structurally rather than by
+ * importing `LocalAudioTrack` and testing `instanceof`.
+ *
+ * This is deliberate version-tolerance: `getSenderStats` is the documented way
+ * in of livekit-client 2.21, and if a later SDK renames or drops it the check
+ * simply fails and the panel falls back to quality-only. An `instanceof` or a
+ * reach into `room.engine` would instead throw, mid-call, on the one code path
+ * whose entire job is to report that something is wrong with the connection.
+ */
+interface SenderStats {
+  roundTripTime?: number;
+  jitter?: number;
+  packetsSent?: number;
+  packetsLost?: number;
+}
+
+interface SenderStatsSource {
+  getSenderStats(): Promise<SenderStats | undefined>;
+}
+
+/**
+ * `startAudio` is how livekit-client asks the browser to lift an autoplay block.
+ * Probed rather than called blind for the same version-tolerance reason as the
+ * stats above: an SDK that drops it should cost an observer its audio, not throw
+ * on the join path.
+ */
+interface AudioStarter {
+  startAudio(): Promise<void>;
+}
+
+function hasStartAudio(room: unknown): room is AudioStarter {
+  return typeof (room as Partial<AudioStarter> | null | undefined)?.startAudio === 'function';
+}
+
+function hasSenderStats(track: unknown): track is SenderStatsSource {
+  return typeof (track as Partial<SenderStatsSource> | null | undefined)?.getSenderStats ===
+    'function';
+}
+
+function readQuality(participant: Participant): TransportQuality {
+  // Read structurally for the same reason as the stats above.
+  const value: unknown = (participant as { connectionQuality?: unknown }).connectionQuality;
+  return typeof value === 'string' && TRANSPORT_QUALITIES.includes(value)
+    ? (value as TransportQuality)
+    : 'unknown';
+}
+
+/**
+ * Estimates the offset between this browser's clock and the agent's.
+ *
+ * Every other envelope in the store is stamped on the agent clock, and the
+ * cockpit derives elapsed time and the whole state strip from the minimum and
+ * maximum `ts` it has seen. A browser whose clock is five minutes fast would,
+ * by contributing transport samples stamped in its own time, stretch the call
+ * to five minutes and squash every state segment into the left edge — a
+ * cosmetic-looking bug with an entirely non-cosmetic cause.
+ *
+ * The estimator is the usual one: keep the smallest observed
+ * `browser_now − agent_ts`, since the least-delayed message is the one whose
+ * transit time contaminates the offset least.
+ */
+class AgentClock {
+  private offset: number | null = null;
+
+  observe(agentTs: number): void {
+    const candidate = Date.now() / 1000 - agentTs;
+    if (!Number.isFinite(candidate)) return;
+    if (this.offset === null || candidate < this.offset) this.offset = candidate;
+  }
+
+  /** False until the agent has spoken once — see `sampleTransport`. */
+  get aligned(): boolean {
+    return this.offset !== null;
+  }
+
+  now(): number {
+    return Date.now() / 1000 - (this.offset ?? 0);
+  }
+}
+
+/**
+ * `body` is what tells the Worker which kind of token to mint: `{}` for a caller
+ * who publishes a microphone, `{ observe: roomName }` for a read-only observer.
+ * One request function rather than two, so a change to error handling cannot
+ * apply to only one of them.
+ */
+async function fetchToken(body: Record<string, unknown> = {}): Promise<TokenResponse> {
   const response = await fetch('/api/token', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     throw new Error(`Token request failed (${response.status})`);
@@ -45,10 +153,68 @@ async function fetchToken(): Promise<TokenResponse> {
 
 export class CockpitSession {
   readonly room: Room;
+  /**
+   * True for a session joined on an observer token. The token itself forbids
+   * publishing, so this is not the security boundary — it is what lets the
+   * cockpit fail loudly on its own side of the wire instead of firing a publish
+   * the server will refuse.
+   */
+  readonly observing: boolean;
   private audioElements = new Set<HTMLMediaElement>();
 
-  private constructor(room: Room) {
+  private readonly clock = new AgentClock();
+  private emit: (envelope: Envelope) => void = () => {};
+  private transportTimer: ReturnType<typeof setInterval> | null = null;
+  /** getStats is async; a slow report must not have two samples racing it. */
+  private samplingTransport = false;
+  /** Packet counters are cumulative, so loss is a delta against the last read. */
+  private lastPackets: { sent: number; lost: number } | null = null;
+
+  private constructor(room: Room, observing: boolean) {
     this.room = room;
+    this.observing = observing;
+  }
+
+  /**
+   * The wiring both a caller and an observer need: telemetry in, remote audio
+   * out. Shared rather than copied so the two paths cannot drift — an observer
+   * that missed a schema change here would show a call with no instruments and
+   * no obvious reason why.
+   *
+   * The audio handler attaches EVERY remote audio track, which for an observer
+   * means both the agent and the caller: an observer subscribes to everyone in
+   * the room, so watching a call is also listening to it.
+   */
+  private attachRoomHandlers(callbacks: SessionCallbacks): void {
+    const { room } = this;
+
+    room.on(RoomEvent.DataReceived, (payload: Uint8Array, _participant, _kind, topic?: string) => {
+      if (topic !== TELEMETRY_TOPIC) return;
+      try {
+        const parsed: unknown = JSON.parse(decoder.decode(payload));
+        if (!isEnvelope(parsed)) return;
+        // Every agent envelope is also a clock reading; see `AgentClock`.
+        this.clock.observe(parsed.ts);
+        callbacks.onEnvelope(parsed);
+      } catch {
+        // A malformed frame must never take the cockpit down mid-call.
+      }
+    });
+
+    room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication) => {
+      if (track.kind !== Track.Kind.Audio) return;
+      const element = track.attach();
+      element.autoplay = true;
+      this.audioElements.add(element);
+      document.body.appendChild(element);
+    });
+
+    room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+      for (const element of track.detach()) {
+        element.remove();
+        this.audioElements.delete(element);
+      }
+    });
   }
 
   /**
@@ -66,33 +232,19 @@ export class CockpitSession {
     signal?.throwIfAborted();
 
     const { token, url } = await fetchToken();
+    /*
+     * Re-checked after the token round trip, and this is not belt-and-braces.
+     * The abort listener below cannot be registered until there is a session to
+     * tear down, and `addEventListener('abort', …)` on an ALREADY-aborted signal
+     * never fires. Without this line, a visitor who cancels while the token is
+     * in flight still gets a room joined on their behalf a moment later.
+     */
+    signal?.throwIfAborted();
+
     const room = new Room({ adaptiveStream: false, dynacast: false });
-    const session = new CockpitSession(room);
-
-    room.on(RoomEvent.DataReceived, (payload: Uint8Array, _participant, _kind, topic?: string) => {
-      if (topic !== TELEMETRY_TOPIC) return;
-      try {
-        const parsed: unknown = JSON.parse(decoder.decode(payload));
-        if (isEnvelope(parsed)) callbacks.onEnvelope(parsed);
-      } catch {
-        // A malformed frame must never take the cockpit down mid-call.
-      }
-    });
-
-    room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _pub: RemoteTrackPublication) => {
-      if (track.kind !== Track.Kind.Audio) return;
-      const element = track.attach();
-      element.autoplay = true;
-      session.audioElements.add(element);
-      document.body.appendChild(element);
-    });
-
-    room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-      for (const element of track.detach()) {
-        element.remove();
-        session.audioElements.delete(element);
-      }
-    });
+    const session = new CockpitSession(room, false);
+    session.emit = callbacks.onEnvelope;
+    session.attachRoomHandlers(callbacks);
 
     // An abort mid-connect has to reach the room this promise is holding, so it
     // tears down from here rather than waiting for a handle to be returned.
@@ -126,15 +278,219 @@ export class CockpitSession {
     // paths above cannot fire a disconnect callback for a call that never
     // started.
     room.on(RoomEvent.Disconnected, () => {
+      session.stopTransport();
       session.cleanupAudio();
       callbacks.onDisconnected();
     });
 
+    // A quality change is the one transport event worth reacting to faster than
+    // the sampling interval — it is what the lamp shows, and two seconds of a
+    // green lamp on a dead connection is two seconds of lying.
+    room.on(RoomEvent.ConnectionQualityChanged, (_quality, participant: Participant) => {
+      if (participant !== room.localParticipant) return;
+      void session.sampleTransport();
+    });
+
+    session.startTransport();
     return session;
+  }
+
+  /**
+   * Joins a call someone else is on, read-only.
+   *
+   * The token minted for `{ observe: room }` carries `canPublish: false`, so
+   * this session has no microphone and never asks for one — there is no
+   * permission prompt anywhere on this path, which is the whole reason a
+   * bystander can watch a phone call without being asked for anything.
+   *
+   * The agent replays its telemetry history to a joining `observer-` identity
+   * before resuming live sends, so the store needs no special case: history
+   * arrives as ordinary envelopes through the handler above.
+   */
+  static async observe(
+    roomName: string,
+    callbacks: SessionCallbacks,
+    signal?: AbortSignal,
+  ): Promise<CockpitSession> {
+    signal?.throwIfAborted();
+
+    const { token, url } = await fetchToken({ observe: roomName });
+    // Same window as `connect` — see the note there. Cancelling while the token
+    // is in flight must not leave a room joined to someone else's call.
+    signal?.throwIfAborted();
+
+    const room = new Room({ adaptiveStream: false, dynacast: false });
+    const session = new CockpitSession(room, true);
+    session.emit = callbacks.onEnvelope;
+    session.attachRoomHandlers(callbacks);
+
+    // Same reasoning as `connect`: between here and a joined room, this promise
+    // owns something the caller cannot see or stop.
+    const abort = () => void session.teardown();
+    signal?.addEventListener('abort', abort, { once: true });
+
+    try {
+      await room.connect(url, token);
+      signal?.throwIfAborted();
+    } catch (cause) {
+      await session.teardown();
+      throw cause;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+
+    room.on(RoomEvent.Disconnected, () => {
+      session.cleanupAudio();
+      callbacks.onDisconnected();
+    });
+
+    /*
+     * Ask the browser to let this call make noise.
+     *
+     * A caller never needs this: granting a microphone unlocks audio playback as
+     * a side effect. An observer grants nothing, so it lands squarely in
+     * autoplay policy — and the click that started this has been spent on a
+     * token round trip and a room connect by the time any track arrives, so the
+     * transient user activation may already have expired.
+     *
+     * Attempted, never awaited, and probed structurally rather than assumed: a
+     * browser that refuses leaves a working instrument panel and a silent call,
+     * which is a degraded observer rather than a broken one. Strict mobile
+     * Safari is the case most likely to refuse, and it is the case least
+     * testable from here — see the note in the session tests.
+     */
+    if (hasStartAudio(room)) void room.startAudio().catch(() => {});
+
+    // No transport sampling, and no ConnectionQualityChanged handler either.
+    // Those samples describe the CALLER's uplink, measured from the microphone
+    // the caller publishes; an observer publishes nothing, so the only thing it
+    // could measure is its own connection to LiveKit — a different network path
+    // entirely. Printing that under "Transport" would be a lie told in the
+    // caller's voice.
+
+    return session;
+  }
+
+  /* ── Transport ─────────────────────────────────────────────────────────── */
+
+  private startTransport(): void {
+    if (this.transportTimer !== null) return;
+    this.transportTimer = setInterval(() => void this.sampleTransport(), TRANSPORT_SAMPLE_MS);
+  }
+
+  /** Idempotent: every teardown path calls it, and some call it twice. */
+  private stopTransport(): void {
+    if (this.transportTimer === null) return;
+    clearInterval(this.transportTimer);
+    this.transportTimer = null;
+  }
+
+  private senderStatsSource(): SenderStatsSource | null {
+    for (const publication of this.room.localParticipant.audioTrackPublications.values()) {
+      if (hasSenderStats(publication.track)) return publication.track;
+    }
+    return null;
+  }
+
+  /**
+   * Loss over the last interval, as a percentage of what we sent in it.
+   *
+   * Both counters are cumulative for the life of the transport, so a ratio of
+   * the raw totals would report the call's average forever and never move.
+   * Deltas also make a reconnect visible: the counters restart, the delta goes
+   * negative, and this re-baselines rather than reporting a loss of −4000%.
+   */
+  private lossPercent(stats: SenderStats): number | undefined {
+    const { packetsSent: sent, packetsLost: lost } = stats;
+    if (!Number.isFinite(sent) || !Number.isFinite(lost)) {
+      this.lastPackets = null;
+      return undefined;
+    }
+
+    const previous = this.lastPackets;
+    this.lastPackets = { sent: sent as number, lost: lost as number };
+    if (previous === null) return undefined;
+
+    const sentDelta = (sent as number) - previous.sent;
+    // A counter that went backwards is a new transport, not a measurement.
+    if (sentDelta < 0) return undefined;
+    // Nothing was sent this interval — a muted microphone measures no loss, it
+    // does not measure zero loss.
+    if (sentDelta === 0) return undefined;
+
+    const lostDelta = Math.max(0, (lost as number) - previous.lost);
+    return Math.min(100, (lostDelta / sentDelta) * 100);
+  }
+
+  /**
+   * One reading, emitted into the store as a `transport` envelope.
+   *
+   * Never throws and never rejects: it runs on an interval for the whole call,
+   * and an unhandled rejection here would be an unhandled rejection every two
+   * seconds.
+   */
+  private async sampleTransport(): Promise<void> {
+    if (this.samplingTransport || this.transportTimer === null) return;
+    // Without an agent envelope to align against there is no agent clock to
+    // stamp this with, and a sample stamped in browser time would distort every
+    // elapsed figure on the page. The agent announces itself on join, so this
+    // suppresses at most the first sample or two.
+    if (!this.clock.aligned) return;
+
+    this.samplingTransport = true;
+    try {
+      const payload: TransportPayload = { quality: readQuality(this.room.localParticipant) };
+
+      const source = this.senderStatsSource();
+      const stats = source ? await source.getSenderStats().catch(() => undefined) : undefined;
+
+      if (stats) {
+        // The WebRTC stats API reports both of these in seconds.
+        if (Number.isFinite(stats.roundTripTime)) {
+          payload.rtt_ms = Math.round((stats.roundTripTime as number) * 1000);
+        }
+        if (Number.isFinite(stats.jitter)) {
+          payload.jitter_ms = Math.round((stats.jitter as number) * 10000) / 10;
+        }
+        const loss = this.lossPercent(stats);
+        if (loss !== undefined) payload.packet_loss_pct = Math.round(loss * 100) / 100;
+      }
+
+      const envelope: unknown = {
+        v: SCHEMA_VERSION,
+        type: 'transport',
+        ts: this.clock.now(),
+        payload,
+      };
+
+      // Held to the same contract as anything arriving off the wire. A negative
+      // round-trip time or a stats report in unexpected units gets dropped here
+      // rather than plotted, and the store keeps its guarantee that everything
+      // in it validated.
+      if (isEnvelope(envelope)) this.emit(envelope);
+    } catch {
+      // Stats are best effort by design: the panel degrades to quality-only,
+      // and a call is never interrupted by its own instrumentation.
+    } finally {
+      this.samplingTransport = false;
+    }
+  }
+
+  /**
+   * Both publishing paths refuse outright on an observer session rather than
+   * attempting a publish the token forbids. The server would reject it anyway,
+   * but as an opaque failure deep inside the SDK; this says which rule was
+   * broken, at the call site that broke it.
+   */
+  private assertWritable(action: string): void {
+    if (this.observing) {
+      throw new Error(`${action} is not available while observing — this session is read-only.`);
+    }
   }
 
   /** Tells the agent how much artificial latency to inject; 0 turns it off. */
   async setChaosDelay(llmDelayMs: number): Promise<void> {
+    this.assertWritable('Chaos injection');
     const message: ChaosControlMessage = {
       v: SCHEMA_VERSION,
       type: 'chaos',
@@ -147,15 +503,20 @@ export class CockpitSession {
   }
 
   async setMicrophoneEnabled(enabled: boolean): Promise<void> {
+    this.assertWritable('The microphone');
     await this.room.localParticipant.setMicrophoneEnabled(enabled);
   }
 
   async disconnect(): Promise<void> {
+    // Stopped here as well as on the Disconnected event: a room that never
+    // fires one must not leave an interval sampling a dead transport forever.
+    this.stopTransport();
     await this.room.disconnect();
   }
 
   /** Full teardown for a session that must not survive — safe to call twice. */
   private async teardown(): Promise<void> {
+    this.stopTransport();
     this.room.removeAllListeners();
     this.cleanupAudio();
     await this.room.disconnect().catch(() => {});

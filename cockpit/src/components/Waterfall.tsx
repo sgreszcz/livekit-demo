@@ -13,8 +13,10 @@
  * hearing audio, or inside a window the solid bar has already charged for.
  */
 
+import { Fragment, useState } from 'react';
 import { LATENCY_BUDGET_SECONDS, STAGE_LABELS, turnWaterfall } from '../telemetry/store';
 import type { CriticalStage, OverlayStage, Turn, TurnWaterfall } from '../telemetry/store';
+import { TurnDetail } from './TurnDetail';
 import { ms } from '../format';
 import { useElementWidth } from '../useElementWidth';
 
@@ -60,6 +62,15 @@ export function Waterfall({ turns }: { turns: Turn[] }) {
   // turn row shares its grid template and therefore its chart-column width.
   const [axisRef, width] = useElementWidth<HTMLDivElement>();
 
+  /**
+   * One drawer at a time, keyed by turn id.
+   *
+   * The waterfall earns its keep by putting every turn on one axis; three open
+   * drawers push half the rows off the screen and the comparison with them. A
+   * second click on the same row closes it.
+   */
+  const [openTurnId, setOpenTurnId] = useState<string | null>(null);
+
   // Only turns the caller started are numbered: counting the agent's greeting as
   // turn one would put every subsequent row one ahead of the id in the logs.
   let ordinal = 0;
@@ -87,6 +98,10 @@ export function Waterfall({ turns }: { turns: Turn[] }) {
               scale={scale}
               width={width}
               budgetX={budgetX}
+              open={openTurnId === turn.turnId}
+              onToggle={() =>
+                setOpenTurnId((current) => (current === turn.turnId ? null : turn.turnId))
+              }
             />
           ))}
         </div>
@@ -115,9 +130,20 @@ interface RowProps {
   scale: number;
   width: number;
   budgetX: number;
+  open: boolean;
+  onToggle: () => void;
 }
 
-function WaterfallRow({ turn, waterfall, label, scale, width, budgetX }: RowProps) {
+function WaterfallRow({
+  turn,
+  waterfall,
+  label,
+  scale,
+  width,
+  budgetX,
+  open,
+  onToggle,
+}: RowProps) {
   const { critical, overlays, transcriptionTick, spanSeconds } = waterfall;
   const total = turn.totalResponseLatency;
   const bargedIn = turn.interruptions.includes('barge_in');
@@ -144,115 +170,144 @@ function WaterfallRow({ turn, waterfall, label, scale, width, budgetX }: RowProp
     .filter(Boolean)
     .join(', ');
 
+  // The whole row is the control, so it is a real button: Enter and Space work
+  // for free, it takes focus in DOM order, and `aria-expanded` says what the
+  // click will do. Its children are spans rather than divs because a button may
+  // only contain phrasing content.
+  const detailId = `wf-detail-${turn.index}`;
+
   return (
-    <div className={`wf-row${turn.degraded ? ' wf-row--degraded' : ''}`}>
-      {/* The gutter fits two chips at most; a barge-in has its own bar marker. */}
-      <div className="wf-row__id">
-        <span className="wf-row__ord">{label}</span>
-        {turn.degraded ? <span className="chip chip--alarm">Chaos</span> : null}
-        {llmCalls > 1 ? (
-          <span className="chip chip--quiet" title={`${llmCalls} LLM calls — tool chain`}>
-            ×{llmCalls}
-          </span>
-        ) : null}
-      </div>
+    <Fragment>
+      <button
+        type="button"
+        className={`wf-row wf-row--turn${turn.degraded ? ' wf-row--degraded' : ''}${
+          open ? ' wf-row--open' : ''
+        }`}
+        aria-expanded={open}
+        /* Only while the drawer exists: the closed row unmounts it, and an
+           `aria-controls` pointing at an absent id is a dangling reference.
+           `aria-expanded` is what carries the disclosure state either way, and
+           the drawer follows the button in DOM order regardless. */
+        aria-controls={open ? detailId : undefined}
+        onClick={onToggle}
+        aria-label={`${description}. ${open ? 'Hide' : 'Show'} stage detail.`}
+      >
+        {/* The gutter fits two chips at most; a barge-in has its own bar marker. */}
+        <span className="wf-row__id">
+          <span className="wf-row__ord">{label}</span>
+          {turn.degraded ? <span className="chip chip--alarm">Chaos</span> : null}
+          {llmCalls > 1 ? (
+            <span className="chip chip--quiet" title={`${llmCalls} LLM calls — tool chain`}>
+              ×{llmCalls}
+            </span>
+          ) : null}
+        </span>
 
-      <div className="wf-row__chart">
-        {width > 0 ? (
-          <svg
-            className="wf-svg"
-            width={width}
-            height={ROW_HEIGHT}
-            role="img"
-            aria-label={description}
-          >
-            {/* Everything right of the rule is time the caller should not have
-                spent waiting. A wash, not an alarm — the alarm is the figure. */}
-            {width > budgetX ? (
-              <rect
-                className="wf-overrun"
-                x={budgetX}
-                y={0}
-                width={width - budgetX}
-                height={ROW_HEIGHT}
-              />
-            ) : null}
+        <span className="wf-row__chart">
+          {width > 0 ? (
+            <svg
+              className="wf-svg"
+              width={width}
+              height={ROW_HEIGHT}
+              /* The button already carries this description as its accessible
+                 name; labelling the drawing too would announce it twice. The
+                 per-segment `title` tooltips are unaffected. */
+              aria-hidden="true"
+            >
+              {/* Everything right of the rule is time the caller should not have
+                  spent waiting. A wash, not an alarm — the alarm is the figure. */}
+              {width > budgetX ? (
+                <rect
+                  className="wf-overrun"
+                  x={budgetX}
+                  y={0}
+                  width={width - budgetX}
+                  height={ROW_HEIGHT}
+                />
+              ) : null}
 
-            <line className="wf-budget-rule" x1={budgetX} x2={budgetX} y1={0} y2={ROW_HEIGHT} />
+              <line className="wf-budget-rule" x1={budgetX} x2={budgetX} y1={0} y2={ROW_HEIGHT} />
 
-            {critical.map((span) => (
-              <rect
-                key={span.key}
-                className="wf-seg"
-                x={x(span.start)}
-                y={BAR_Y}
-                width={Math.max(x(span.seconds), 1)}
-                height={BAR_HEIGHT}
-                fill={CRITICAL_FILL[span.key]}
-                rx={1.5}
-              >
-                <title>{`${span.label}: ${ms(span.seconds)} ms — the caller is waiting`}</title>
-              </rect>
-            ))}
+              {critical.map((span) => (
+                <rect
+                  key={span.key}
+                  className="wf-seg"
+                  x={x(span.start)}
+                  y={BAR_Y}
+                  width={Math.max(x(span.seconds), 1)}
+                  height={BAR_HEIGHT}
+                  fill={CRITICAL_FILL[span.key]}
+                  rx={1.5}
+                >
+                  <title>{`${span.label}: ${ms(span.seconds)} ms — the caller is waiting`}</title>
+                </rect>
+              ))}
 
-            {/* Transcription finishes inside the EOU window, so it is a mark on
-                the bar rather than a segment of it. */}
-            {transcriptionTick !== null ? (
-              <line
-                className="wf-tick"
-                x1={x(transcriptionTick)}
-                x2={x(transcriptionTick)}
-                y1={BAR_Y}
-                y2={BAR_Y + BAR_HEIGHT}
-              >
-                <title>
-                  {`${STAGE_LABELS.transcription} at ${ms(transcriptionTick)} ms — inside the ` +
-                    `end-of-utterance window, not added to it`}
-                </title>
-              </line>
-            ) : null}
+              {/* Transcription finishes inside the EOU window, so it is a mark on
+                  the bar rather than a segment of it. */}
+              {transcriptionTick !== null ? (
+                <line
+                  className="wf-tick"
+                  x1={x(transcriptionTick)}
+                  x2={x(transcriptionTick)}
+                  y1={BAR_Y}
+                  y2={BAR_Y + BAR_HEIGHT}
+                >
+                  <title>
+                    {`${STAGE_LABELS.transcription} at ${ms(transcriptionTick)} ms — inside the ` +
+                      `end-of-utterance window, not added to it`}
+                  </title>
+                </line>
+              ) : null}
 
-            {overlays.map((span) => (
-              <rect
-                key={span.key}
-                className="wf-overlay"
-                x={x(span.start)}
-                y={LANE_Y[span.key]}
-                width={Math.max(x(span.seconds), 1)}
-                height={LANE_HEIGHT}
-                fill={OVERLAY_FILL[span.key]}
-                rx={1.5}
-              >
-                <title>
-                  {`${span.label}: ${ms(span.seconds)} ms running under audio the caller can ` +
-                    `already hear — not part of the wait`}
-                </title>
-              </rect>
-            ))}
+              {overlays.map((span) => (
+                <rect
+                  key={span.key}
+                  className="wf-overlay"
+                  x={x(span.start)}
+                  y={LANE_Y[span.key]}
+                  width={Math.max(x(span.seconds), 1)}
+                  height={LANE_HEIGHT}
+                  fill={OVERLAY_FILL[span.key]}
+                  rx={1.5}
+                >
+                  <title>
+                    {`${span.label}: ${ms(span.seconds)} ms running under audio the caller can ` +
+                      `already hear — not part of the wait`}
+                  </title>
+                </rect>
+              ))}
 
-            {bargedIn ? <BargeInMarker x={x(spanSeconds)} /> : null}
-          </svg>
-        ) : null}
-      </div>
+              {bargedIn ? <BargeInMarker x={x(spanSeconds)} /> : null}
+            </svg>
+          ) : null}
+        </span>
 
-      <div className={`wf-row__total num ${totalClass}`}>
-        {total !== undefined ? (
-          <>
-            {ms(total)}
-            <small>ms</small>
-          </>
-        ) : waterfall.agentInitiated ? (
-          <span
-            className="wf-row__partial"
-            title="The agent opened this turn, so there is no caller utterance to measure a wait from."
-          >
-            agent-initiated
-          </span>
-        ) : (
-          <span className="wf-row__pending">···</span>
-        )}
-      </div>
-    </div>
+        <span className={`wf-row__total num ${totalClass}`}>
+          {total !== undefined ? (
+            <>
+              {ms(total)}
+              <small>ms</small>
+            </>
+          ) : waterfall.agentInitiated ? (
+            <span
+              className="wf-row__partial"
+              title="The agent opened this turn, so there is no caller utterance to measure a wait from."
+            >
+              agent-initiated
+            </span>
+          ) : (
+            <span className="wf-row__pending">···</span>
+          )}
+        </span>
+      </button>
+
+      {open ? (
+        <div className="wf-drawer" id={detailId}>
+          <TurnDetail turn={turn} />
+        </div>
+      ) : null}
+    </Fragment>
   );
 }
 
@@ -370,6 +425,8 @@ function Key() {
 
       <p className="wf-key__note">
         Solid bar = what the caller waits through; dimmed lanes overlap audio they can already hear.
+        {' '}
+        <b className="wf-key__hint">Select any turn for its stage, token and audio detail.</b>
       </p>
     </div>
   );

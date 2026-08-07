@@ -10,6 +10,7 @@ LIVEKIT_API_SECRET trio.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -42,6 +43,7 @@ from telemetry import (
     TelemetryPublisher,
     TurnStore,
     envelope,
+    is_observer,
     post_debrief,
 )
 
@@ -91,9 +93,23 @@ no bullet points, and expand numbers into words the way a person would say them.
 figure is an approximation, and you say so if it comes up.
 - Never gimmicky. No jokes about being an AI, no theatrics. The engineering is the show.
 
-Open the call by greeting the visitor, telling them briefly what they're looking at, and \
-inviting them to ask about the numbers or to try chaos mode.
+You have already greeted the visitor. The call opened with a fixed spoken greeting that \
+welcomed them to Glass Cockpit, told them every measurement of this call is streaming to \
+the dashboard, and invited them to ask anything or to ask how the call quality is. Do not \
+greet them again and do not reintroduce yourself — pick the conversation up from there, \
+and if their first question is broad, offer the latency waterfall or chaos mode as places \
+to start.
 """
+
+# Spoken verbatim the moment the session starts, instead of asking the model to compose a
+# greeting. A generated opener costs a full LLM round-trip before the first audio byte —
+# on a demo whose entire subject is latency, the first thing the visitor experiences must
+# not be the slowest thing on the call.
+GREETING = (
+    "Welcome to Glass Cockpit. You're talking to a live LiveKit voice agent, and every "
+    "measurement of this call — including this sentence — is streaming to the dashboard. "
+    "Ask me anything, or ask how the call quality is."
+)
 
 
 class GlassCockpitAgent(Agent):
@@ -207,11 +223,63 @@ def _wire_telemetry(
         publisher.emit(store.record_false_interruption())
 
 
-async def _resolve_entry(ctx: JobContext) -> str:
+# The participant kinds a human caller can arrive as — the same set the SDK's own
+# wait_for_participant defaults to (CONNECTOR, SIP, STANDARD). Excludes other agents.
+CALLER_KINDS = (
+    rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD,
+    rtc.ParticipantKind.PARTICIPANT_KIND_SIP,
+    rtc.ParticipantKind.PARTICIPANT_KIND_CONNECTOR,
+)
+
+
+def is_caller(participant: rtc.Participant) -> bool:
+    """True for the human this call is with — not an observer cockpit, not an agent."""
+    return participant.kind in CALLER_KINDS and not is_observer(participant.identity)
+
+
+def classify_entry(participant: rtc.Participant) -> str:
     """Classify how the caller reached us: a SIP trunk, or a browser."""
-    participant = await ctx.wait_for_participant()
-    is_sip = participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-    return "sip" if is_sip else "browser"
+    if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
+        return "sip"
+    return "browser"
+
+
+async def wait_for_caller(room: rtc.Room) -> rtc.RemoteParticipant:
+    """Wait for the participant this call is actually with.
+
+    ``JobContext.wait_for_participant`` cannot be used here: it filters on exact identity
+    or on participant kind, and an observer cockpit is an ordinary STANDARD participant —
+    indistinguishable by kind from the caller. Given a room the caller has not joined yet,
+    it would return the first observer to arrive and the call would be classified, and
+    reported, against the wrong participant. Identity is the only signal that separates
+    them, so the wait is reimplemented with an identity filter.
+
+    Participants already in the room are considered first, then both connection events:
+    ``participant_connected`` fires on arrival, ``participant_active`` once the participant
+    is ready to exchange media, and either can come first depending on the kind.
+    """
+    fut: asyncio.Future[rtc.RemoteParticipant] = asyncio.get_running_loop().create_future()
+
+    def _consider(participant: rtc.RemoteParticipant) -> None:
+        if not fut.done() and is_caller(participant):
+            fut.set_result(participant)
+
+    for participant in list(room.remote_participants.values()):
+        _consider(participant)
+    if fut.done():
+        return fut.result()
+
+    room.on("participant_connected", _consider)
+    room.on("participant_active", _consider)
+    try:
+        return await fut
+    finally:
+        room.off("participant_connected", _consider)
+        room.off("participant_active", _consider)
+
+
+async def _resolve_entry(ctx: JobContext) -> str:
+    return classify_entry(await wait_for_caller(ctx.room))
 
 
 server = AgentServer()
@@ -238,6 +306,13 @@ async def entrypoint(ctx: JobContext) -> None:
         chaos.set_delay_ms(delay_ms)
         logger.info("chaos delay set to %d ms", chaos.delay_ms)
         publisher.emit(envelope("chaos", chaos.envelope_payload(), ts=time.time()))
+
+    @ctx.room.on("participant_connected")
+    def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        # A cockpit that joined mid-call missed everything published before it arrived.
+        # Catch it up, addressed to it alone — the caller has already seen all of this.
+        if is_observer(participant.identity):
+            publisher.snapshot_to(participant.identity)
 
     entry = await _resolve_entry(ctx)
     call_id = await ctx.room.sid or ctx.job.id
@@ -268,7 +343,13 @@ async def entrypoint(ctx: JobContext) -> None:
     _wire_telemetry(session, store, publisher)
 
     await session.start(agent=GlassCockpitAgent(store), room=ctx.room)
-    session.generate_reply()
+    # say(), not generate_reply(): the greeting is fixed text, so there is nothing to
+    # think about and no reason to make the visitor wait for a completion before the
+    # first audio byte. It still goes through the full speech path — a SpeechHandle,
+    # a "speech_created" event (so barge-in tracking covers the greeting), TTS metrics
+    # tagged with its speech id, and an assistant message in the chat context — so the
+    # cockpit renders a normal, if partial, agent-initiated turn.
+    session.say(GREETING)
 
 
 if __name__ == "__main__":

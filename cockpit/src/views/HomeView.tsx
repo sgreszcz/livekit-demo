@@ -6,11 +6,14 @@
 import { useEffect, useMemo } from 'react';
 import { CockpitBoard } from '../components/CockpitBoard';
 import { Footer } from '../components/Footer';
+import { LiveCallCard, type LiveCallEntry } from '../components/LiveCallCard';
 import { Mark } from '../components/Mark';
 import { MiniWaterfall } from '../components/MiniWaterfall';
 import { PHONE_DISPLAY, PHONE_E164 } from '../config';
 import { fixtureEnvelopes } from '../telemetry/fixtureSource';
+import { roomElapsedSeconds } from '../telemetry/activeRooms';
 import { callDurationSeconds, reduceAll } from '../telemetry/store';
+import { useActiveRooms } from '../useActiveRooms';
 import { useCockpit, type CockpitMode } from '../useCockpit';
 import { duration, ms } from '../format';
 
@@ -19,14 +22,43 @@ const LAMP: Record<CockpitMode, { className: string; label: string }> = {
   connecting: { className: 'lamp--warn', label: 'Connecting' },
   live: { className: 'lamp--live', label: 'On air' },
   replay: { className: 'lamp--live', label: 'Replay' },
+  // Violet, not the caller's green and not the chaos amber: this browser is on
+  // the call but is not part of it, and that is its own state.
+  observing: { className: 'lamp--observe', label: 'Observing · read-only' },
   ended: { className: 'lamp--idle', label: 'Call ended' },
   error: { className: 'lamp--fault', label: 'Fault' },
 };
+
+const OBSERVER_CHAOS_NOTE = 'Chaos injection is caller-side — this session is read-only.';
 
 export function HomeView() {
   const cockpit = useCockpit();
   const { mode, startReplay } = cockpit;
   const showBoard = mode !== 'idle' && mode !== 'error';
+
+  // Only the hero asks who is on the phone. During a call, a replay or a
+  // debrief the visitor is reading instruments, and a poll behind them would be
+  // network traffic bought for a list nobody can see.
+  const onHero = mode === 'idle' || mode === 'error';
+  const active = useActiveRooms(onHero);
+
+  /**
+   * Elapsed time is recomputed here, on each render, from the snapshot that is
+   * already in hand — which means it advances once every poll rather than once
+   * a second. That is deliberate: a per-second ticker would be a second timer
+   * animating a figure whose underlying reading is five seconds old, and a
+   * smooth number is not the same thing as a fresh one.
+   */
+  // The mode is re-checked here as well as in the hook: the hook clears its
+  // snapshot from an effect, which is one render after the mode changed, and
+  // that render would flash a lobby over a call that is already connecting.
+  const calls: LiveCallEntry[] = active && onHero
+    ? active.rooms.map((room) => ({
+        room: room.room,
+        entry: room.entry,
+        elapsedSeconds: roomElapsedSeconds(room, active, Date.now()),
+      }))
+    : [];
 
   // `?fixture=1` boots straight into the recorded sample call — the link the
   // hero offers to visitors who would rather not talk to a robot.
@@ -71,6 +103,13 @@ export function HomeView() {
               Cancel
             </button>
           ) : null}
+          {mode === 'observing' ? (
+            // No Mute beside it: an observer has no microphone to mute.
+            <button type="button" className="btn btn--quiet" onClick={cockpit.stopObserving}>
+              <span className="wide-only">Stop watching</span>
+              <span className="narrow-only">Stop</span>
+            </button>
+          ) : null}
           {mode === 'replay' ? (
             <button type="button" className="btn btn--quiet" onClick={() => void cockpit.endCall()}>
               <span className="wide-only">Stop replay</span>
@@ -88,6 +127,11 @@ export function HomeView() {
 
       {cockpit.error ? <p className="notice">{cockpit.error}</p> : null}
 
+      {/* Above the hero and full width: on a phone this is the first thing on
+          the screen, which is the point — someone else's call in progress is a
+          better invitation than any button. */}
+      <LiveCallCard calls={calls} onWatch={(room) => void cockpit.startObserving(room)} />
+
       {mode === 'idle' || mode === 'error' ? <Hero cockpit={cockpit} /> : null}
 
       {mode === 'ended' ? <Debrief cockpit={cockpit} /> : null}
@@ -100,9 +144,16 @@ export function HomeView() {
         <CockpitBoard
           state={cockpit.state}
           follow={mode !== 'ended'}
+          /* False while observing, and the Transport panel's "not recorded"
+             note is the honest answer: transport is the caller's uplink,
+             measured from the microphone they publish. An observer publishes
+             nothing, and its own connection quality is a different network path
+             — showing it here would attribute this browser's network to them. */
+          live={mode === 'live'}
           chaos={{
             delayMs: cockpit.chaosDelayMs,
             disabled: mode !== 'live',
+            note: mode === 'observing' ? OBSERVER_CHAOS_NOTE : undefined,
             onChange: (value) => void cockpit.setChaosDelay(value),
           }}
         />

@@ -19,6 +19,7 @@ import type {
   LlmMetrics,
   SttMetrics,
   TranscriptRole,
+  TransportQuality,
   TtsMetrics,
   TurnPayload,
   UsagePayload,
@@ -58,6 +59,27 @@ export interface ChaosState {
   llmDelayMs: number;
   active: boolean;
 }
+
+/**
+ * One WebRTC reading. The three figures are independently optional: a sample
+ * that only knows the SDK's quality verdict is a legitimate sample, and the
+ * panel draws what it has.
+ */
+export interface TransportSample {
+  ts: number;
+  rttMs?: number;
+  jitterMs?: number;
+  lossPct?: number;
+  quality: TransportQuality;
+}
+
+/**
+ * Ten minutes of transport history at one sample every two seconds. The series
+ * is copied on every append (unlike the envelope log, which is mutated) — at
+ * 0.5 Hz and 300 entries that is nothing, and it keeps the reducer pure enough
+ * to survive StrictMode's double invocation without special-casing.
+ */
+export const MAX_TRANSPORT_SAMPLES = 300;
 
 /**
  * The envelope log, bounded and appended in place.
@@ -120,6 +142,8 @@ export interface CockpitState {
   states: StateSample[];
   usage: UsagePayload | null;
   chaos: ChaosState;
+  /** Browser-sampled WebRTC readings, oldest first, bounded. */
+  transport: TransportSample[];
   /** Every envelope in arrival order — this is what gets POSTed as a debrief. */
   log: EnvelopeLog;
   firstTs: number | null;
@@ -138,6 +162,7 @@ export function createCockpitState(): CockpitState {
     states: [],
     usage: null,
     chaos: { llmDelayMs: 0, active: false },
+    transport: [],
     log: emptyLog(),
     firstTs: null,
     lastTs: null,
@@ -385,6 +410,27 @@ export function reduceEnvelope(state: CockpitState, envelope: Envelope): Cockpit
         ...base,
         chaos: { llmDelayMs: envelope.payload.llm_delay_ms, active: envelope.payload.active },
       };
+
+    case 'transport': {
+      const { rtt_ms, jitter_ms, packet_loss_pct, quality } = envelope.payload;
+      // Absent figures stay absent rather than becoming zero: a sample that
+      // could not read the round-trip time did not measure it at 0 ms, and a
+      // sparkline that cannot tell those apart plots a cliff that never
+      // happened.
+      const sample: TransportSample = {
+        ts,
+        quality,
+        ...(rtt_ms !== undefined ? { rttMs: rtt_ms } : null),
+        ...(jitter_ms !== undefined ? { jitterMs: jitter_ms } : null),
+        ...(packet_loss_pct !== undefined ? { lossPct: packet_loss_pct } : null),
+      };
+
+      const transport = [...base.transport, sample];
+      if (transport.length > MAX_TRANSPORT_SAMPLES) {
+        transport.splice(0, transport.length - MAX_TRANSPORT_SAMPLES);
+      }
+      return { ...base, transport };
+    }
   }
 }
 
@@ -418,4 +464,97 @@ export function callDurationSeconds(state: CockpitState): number {
 /** The most recent agent state, for the live status indicator. */
 export function currentAgentState(state: CockpitState): AgentState | null {
   return state.states.length > 0 ? state.states[state.states.length - 1].state : null;
+}
+
+/** The newest transport reading, or null if this call recorded none. */
+export function latestTransport(state: CockpitState): TransportSample | null {
+  return state.transport.length > 0 ? state.transport[state.transport.length - 1] : null;
+}
+
+/* ── Session aggregates ────────────────────────────────────────────────── */
+
+/**
+ * Below this many completed turns a 95th percentile is arithmetic, not a
+ * statistic — with four samples it is just the worst one wearing a better name,
+ * so the readout omits it rather than dressing up a maximum.
+ */
+export const P95_MIN_TURNS = 5;
+
+export interface LatencyAggregates {
+  /** Turns with an agent-computed total — the only ones any of this is over. */
+  measured: number;
+  median: number;
+  /** Null below `P95_MIN_TURNS`; see the constant. */
+  p95: number | null;
+  worst: number;
+  /** How many measured turns ran past `LATENCY_BUDGET_SECONDS`. */
+  overBudget: number;
+}
+
+/**
+ * Nearest-rank percentile: the smallest observed value at or below which the
+ * given fraction of turns fall. No interpolation, so every figure printed is a
+ * turn that actually happened — and at the small sample sizes a demo call
+ * produces, p95 legitimately lands on the worst turn. That is the honest
+ * answer, not a rounding artefact.
+ */
+function nearestRank(sorted: number[], fraction: number): number {
+  const rank = Math.ceil(fraction * sorted.length);
+  return sorted[Math.min(Math.max(rank, 1), sorted.length) - 1];
+}
+
+function median(sorted: number[]): number {
+  if (sorted.length === 0) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+}
+
+export function latencyAggregates(turns: readonly Turn[]): LatencyAggregates {
+  const latencies = turns
+    .map((turn) => turn.totalResponseLatency)
+    .filter((value): value is number => value !== undefined);
+  const sorted = [...latencies].sort((a, b) => a - b);
+
+  return {
+    measured: sorted.length,
+    median: median(sorted),
+    p95: sorted.length >= P95_MIN_TURNS ? nearestRank(sorted, 0.95) : null,
+    worst: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
+    overBudget: sorted.filter((value) => value > LATENCY_BUDGET_SECONDS).length,
+  };
+}
+
+export interface InterruptionTotals {
+  bargeIns: number;
+  falseInterruptions: number;
+  total: number;
+}
+
+export function interruptionTotals(turns: readonly Turn[]): InterruptionTotals {
+  let bargeIns = 0;
+  let falseInterruptions = 0;
+  for (const turn of turns) {
+    for (const kind of turn.interruptions) {
+      if (kind === 'barge_in') bargeIns += 1;
+      else falseInterruptions += 1;
+    }
+  }
+  return { bargeIns, falseInterruptions, total: bargeIns + falseInterruptions };
+}
+
+/**
+ * A spend rate is an extrapolation, and dividing by a few hundred milliseconds
+ * extrapolates a rounding error into dollars per minute. Below this the ledger
+ * prints nothing rather than a number it would have to disown.
+ */
+export const MIN_RATE_SECONDS = 5;
+
+/** Estimated USD per minute of call, or null when the call is too short to say. */
+export function costPerMinute(
+  usage: UsagePayload | null,
+  elapsedSeconds: number,
+): number | null {
+  if (!usage) return null;
+  if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < MIN_RATE_SECONDS) return null;
+  return usage.est_cost_usd / (elapsedSeconds / 60);
 }

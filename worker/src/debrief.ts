@@ -49,6 +49,12 @@ function isEnvelopeShaped(message: unknown): message is Record<string, unknown> 
   );
 }
 
+/** KV list metadata, written on put so /api/metrics can order without reading. */
+export interface DebriefMetadata {
+  /** Unix seconds, same value as the record's own `stored_at`. */
+  stored_at: number;
+}
+
 export interface StoredDebrief {
   call_id: string;
   meta: unknown;
@@ -165,7 +171,14 @@ export async function handleDebriefPost(request: Request, env: Env): Promise<Res
   record.source = (await isAgentRequest(request, env)) ? 'agent' : 'browser';
 
   const id = randomId(ID_LENGTH);
-  await env.DEBRIEFS.put(id, JSON.stringify(record), { expirationTtl: TTL_SECONDS });
+  // The ids are random, so a KV list is in no useful order. Carrying the store
+  // time as metadata is what lets /api/metrics sample the *newest* debriefs when
+  // there are more than it will read — list returns metadata for free, whereas
+  // learning the same thing from the values means reading every one of them.
+  await env.DEBRIEFS.put(id, JSON.stringify(record), {
+    expirationTtl: TTL_SECONDS,
+    metadata: { stored_at: record.stored_at } satisfies DebriefMetadata,
+  });
 
   return json({ id, url: new URL(`/call/${id}`, request.url).toString() }, { status: 201 });
 }

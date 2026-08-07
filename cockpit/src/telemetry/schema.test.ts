@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { isEnvelope } from './schema';
+import { MAX_LLM_CHAIN_LINKS, isEnvelope } from './schema';
 import { parseEnvelopeLines } from './store';
 
 const validTurn = {
@@ -198,6 +198,96 @@ describe('isEnvelope — rejects crafted payloads', () => {
       expect(isEnvelope(value)).toBe(false);
     });
   }
+});
+
+/**
+ * `transport` envelopes are minted by the cockpit itself, but they are held to
+ * the same contract as anything off the wire: they also arrive inside stored
+ * debriefs, which any visitor can POST.
+ */
+describe('isEnvelope — transport', () => {
+  const transport = (payload: unknown) => ({ v: 1, type: 'transport', ts: 1, payload });
+
+  it('accepts a full reading', () => {
+    expect(
+      isEnvelope(transport({ rtt_ms: 48, jitter_ms: 4.1, packet_loss_pct: 0.4, quality: 'good' })),
+    ).toBe(true);
+  });
+
+  it('accepts a quality-only reading, which is the documented fallback', () => {
+    // A muted microphone or a mid-reconnect transport reports no figures at
+    // all; that sample is still worth keeping and must not be dropped.
+    expect(isEnvelope(transport({ quality: 'excellent' }))).toBe(true);
+  });
+
+  it('accepts every quality the SDK can report', () => {
+    for (const quality of ['excellent', 'good', 'poor', 'lost', 'unknown']) {
+      expect(isEnvelope(transport({ quality }))).toBe(true);
+    }
+  });
+
+  const rejected: [string, unknown][] = [
+    ['no quality at all', { rtt_ms: 48 }],
+    ['a quality the SDK never reports', { quality: 'vibes' }],
+    ['a stringly-typed round trip', { quality: 'good', rtt_ms: '48' }],
+    ['a negative round trip', { quality: 'good', rtt_ms: -1 }],
+    ['a NaN jitter', { quality: 'good', jitter_ms: NaN }],
+    ['an infinite jitter', { quality: 'good', jitter_ms: Infinity }],
+    // Seconds mistaken for milliseconds is the plausible version of this bug;
+    // an hour of round-trip time is the implausible one. Both flatten a
+    // sparkline's y-scale into a floor.
+    ['a round trip of an hour', { quality: 'good', rtt_ms: 3_600_000 }],
+    ['a loss above 100%', { quality: 'poor', packet_loss_pct: 140 }],
+    ['a negative loss', { quality: 'poor', packet_loss_pct: -0.5 }],
+    ['a null payload', null],
+    ['an array payload', []],
+  ];
+
+  for (const [name, payload] of rejected) {
+    it(`rejects ${name}`, () => {
+      expect(isEnvelope(transport(payload))).toBe(false);
+    });
+  }
+});
+
+describe('isEnvelope — llm.chain', () => {
+  const withChain = (chain: unknown) => ({
+    ...validTurn,
+    payload: {
+      ...validTurn.payload,
+      llm: { ...validTurn.payload.llm, llm_calls: 2, chain },
+    },
+  });
+
+  it('accepts a per-invocation breakdown', () => {
+    expect(isEnvelope(withChain([{ ttft: 0.4, duration: 1.1 }, { ttft: 0.2, duration: 0.6 }]))).toBe(
+      true,
+    );
+  });
+
+  it('accepts a turn that reports a chain length but no chain', () => {
+    // `chain` is optional by contract even when `llm_calls > 1`.
+    expect(isEnvelope(validTurn)).toBe(true);
+  });
+
+  it('rejects a chain that is not an array', () => {
+    expect(isEnvelope(withChain({ ttft: 0.4, duration: 1.1 }))).toBe(false);
+  });
+
+  it('rejects a link missing its duration', () => {
+    expect(isEnvelope(withChain([{ ttft: 0.4 }]))).toBe(false);
+  });
+
+  it('rejects a link with a negative duration', () => {
+    expect(isEnvelope(withChain([{ ttft: 0.4, duration: -1 }]))).toBe(false);
+  });
+
+  it('rejects a chain long enough to be a denial of service', () => {
+    // Each link draws a mini-bar, and a stored debrief is attacker-controlled.
+    const link = { ttft: 0.1, duration: 0.2 };
+    expect(isEnvelope(withChain(new Array(MAX_LLM_CHAIN_LINKS).fill(link)))).toBe(true);
+    expect(isEnvelope(withChain(new Array(MAX_LLM_CHAIN_LINKS + 1).fill(link)))).toBe(false);
+  });
 });
 
 describe('parseEnvelopeLines', () => {

@@ -28,6 +28,7 @@ import pricing
 
 __all__ = [
     "CONTROL_TOPIC",
+    "OBSERVER_IDENTITY_PREFIX",
     "SCHEMA_VERSION",
     "TELEMETRY_TOPIC",
     "LLMInvocation",
@@ -36,6 +37,7 @@ __all__ = [
     "Turn",
     "TurnStore",
     "envelope",
+    "is_observer",
     "post_debrief",
 ]
 
@@ -44,6 +46,11 @@ logger = logging.getLogger("glass-cockpit.telemetry")
 SCHEMA_VERSION = 1
 TELEMETRY_TOPIC = "cockpit"
 CONTROL_TOPIC = "cockpit-control"
+
+# A cockpit opened by someone who is not the caller joins the room under this identity
+# prefix. Observers are read-only: they never drive turn detection, never decide the
+# call's entry classification, and are the only participants sent the catch-up snapshot.
+OBSERVER_IDENTITY_PREFIX = "observer-"
 
 # LiveKit data packets are capped at 15 KiB; only transcripts can realistically
 # approach that, and they get truncated rather than dropped.
@@ -55,6 +62,11 @@ EnvelopeType = Literal["turn", "transcript", "state", "interruption", "usage", "
 # The SDK's AgentState includes "idle", which the wire schema does not model; the
 # cockpit treats an idle agent as listening.
 _STATE_ALIASES = {"idle": "listening"}
+
+
+def is_observer(identity: str | None) -> bool:
+    """True for a read-only cockpit that joined to watch someone else's call."""
+    return bool(identity) and identity.startswith(OBSERVER_IDENTITY_PREFIX)  # type: ignore[union-attr]
 
 
 def envelope(
@@ -271,10 +283,17 @@ class TurnStore:
         Everything but ``ttft`` is a plain sum. ``ttft`` is what the caller perceives:
         each invocation before the last had to finish (tool call included in the reply
         only afterwards), so their full durations precede the last one's first token.
+
+        Summing is lossy — a 1.4 s ``ttft`` reads the same whether one slow call or two
+        quick ones produced it — so a multi-invocation turn also carries the per-call
+        breakdown in the optional ``chain`` array, in invocation order. It is omitted
+        for the single-call case, where it would only repeat ``ttft``/``duration``:
+        every turn on a normal call pays for that field otherwise, and consumers of the
+        v1 schema must treat it as optional regardless.
         """
         duration = sum(call.duration for call in chain)
         completion_tokens = sum(call.completion_tokens for call in chain)
-        return {
+        block: dict[str, Any] = {
             "ttft": _r(sum(call.duration for call in chain[:-1]) + chain[-1].ttft),
             "duration": _r(duration),
             "prompt_tokens": sum(call.prompt_tokens for call in chain),
@@ -283,6 +302,11 @@ class TurnStore:
             "llm_calls": len(chain),
             "model": self._models.llm,
         }
+        if len(chain) > 1:
+            block["chain"] = [
+                {"ttft": _r(call.ttft), "duration": _r(call.duration)} for call in chain
+            ]
+        return block
 
     def record_tts(
         self,
@@ -586,6 +610,19 @@ class TurnStore:
         return " ".join(lines)
 
 
+@dataclass(frozen=True)
+class _Send:
+    """One queued data-channel write.
+
+    An empty ``destinations`` broadcasts to the room, which is what every live envelope
+    does. A populated one addresses named participants only — see
+    :meth:`TelemetryPublisher.snapshot_to`.
+    """
+
+    env: dict[str, Any]
+    destinations: tuple[str, ...] = ()
+
+
 class TelemetryPublisher:
     """Serialises envelopes onto the room data channel, in order, and records them.
 
@@ -596,7 +633,7 @@ class TelemetryPublisher:
 
     def __init__(self, room: Any | None) -> None:
         self._room = room
-        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._queue: asyncio.Queue[_Send] = asyncio.Queue()
         self._drain_task: asyncio.Task[None] | None = None
         self._messages: list[dict[str, Any]] = []
 
@@ -614,11 +651,35 @@ class TelemetryPublisher:
         if env is None:
             return
         self._messages.append(env)
-        self._queue.put_nowait(env)
+        self._queue.put_nowait(_Send(env))
 
     def emit_all(self, envelopes: list[dict[str, Any]]) -> None:
         for env in envelopes:
             self.emit(env)
+
+    def snapshot_to(self, identity: str) -> int:
+        """Replay the call so far to one participant, and return how many envelopes.
+
+        A cockpit that joins mid-call has missed every envelope published before it
+        arrived — the data channel does not retain them — so it would render an empty
+        dashboard until the next turn. Re-publishing the log catches it up.
+
+        The replay is *addressed*, never broadcast: the caller's own cockpit has already
+        merged these envelopes, and a second copy of the state and usage streams would
+        corrupt its timeline (usage totals are absolute, but state transitions and
+        interruptions are events, and it would count them twice).
+
+        Ordering is exact because the copies go through the same queue as live traffic:
+        anything emitted after this call is queued behind the replay, so the observer
+        sees the call in the order it happened and then joins the live stream. Nothing
+        is appended to :attr:`messages` — the debrief records what the call *emitted*,
+        not how many times it was transmitted.
+        """
+        replay = tuple(self._messages)
+        for env in replay:
+            self._queue.put_nowait(_Send(env, (identity,)))
+        logger.info("replaying %d envelopes to observer %s", len(replay), identity)
+        return len(replay)
 
     async def aclose(self) -> None:
         """Flush anything still queued, then stop the drain task."""
@@ -632,20 +693,25 @@ class TelemetryPublisher:
 
     async def _drain(self) -> None:
         while True:
-            env = await self._queue.get()
+            send = await self._queue.get()
             try:
-                await self._publish(env)
+                await self._publish(send)
             except Exception:
-                logger.exception("failed to publish telemetry envelope type=%s", env.get("type"))
+                logger.exception(
+                    "failed to publish telemetry envelope type=%s", send.env.get("type")
+                )
             finally:
                 self._queue.task_done()
 
-    async def _publish(self, env: dict[str, Any]) -> None:
+    async def _publish(self, send: _Send) -> None:
         if self._room is None:
-            logger.debug("cockpit %s %s", env["type"], env["payload"])
+            logger.debug("cockpit %s %s", send.env["type"], send.env["payload"])
             return
         await self._room.local_participant.publish_data(
-            encode_envelope(env), reliable=True, topic=TELEMETRY_TOPIC
+            encode_envelope(send.env),
+            reliable=True,
+            topic=TELEMETRY_TOPIC,
+            destination_identities=list(send.destinations),
         )
 
 

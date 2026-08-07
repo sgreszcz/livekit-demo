@@ -89,6 +89,11 @@
 
   --accent-wash: rgba(61, 220, 151, 0.1);
   --accent-line: rgba(61, 220, 151, 0.34);
+  /* Violet reads as "the model" on the waterfall and as "watching, not
+     talking" in the topbar — both are the machine's side of the call, neither
+     is a fault, and neither may borrow amber. */
+  --model-wash: rgba(167, 139, 250, 0.12);
+  --model-line: rgba(167, 139, 250, 0.34);
   --amber-wash: rgba(255, 180, 61, 0.11);
   --alarm-wash: rgba(255, 107, 112, 0.1);
   --caller-wash: rgba(77, 141, 250, 0.12);
@@ -221,6 +226,16 @@ a:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A readout too long to ellipsis honestly: it wraps rather than pretending the
+   half of it that fits is all of it. Opt-in, so short readouts keep their
+   single-line discipline. */
+.panel__aside--wrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  text-align: right;
 }
 
 /* A panel folded into a native disclosure (phone only — see useNarrow). The
@@ -431,6 +446,22 @@ a:hover {
    never touches layout, so it cannot cost a frame on a slow machine. */
 .lamp--live::before {
   animation: ping 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Healthy, but not "on air" — the ping means a call is running, and a transport
+   reading is a condition rather than an event. */
+.lamp--ok {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
+}
+
+/* Watching someone else's call. Not green — this browser is not on air, it is a
+   bystander — and emphatically not amber or red, which belong to chaos. */
+.lamp--observe {
+  color: var(--model);
+  border-color: var(--model-line);
+  background: var(--model-wash);
 }
 
 .lamp--warn {
@@ -797,6 +828,12 @@ a.placard__value:hover {
 .cockpit .panel:nth-child(3) {
   animation-delay: 0.15s;
 }
+.cockpit .panel:nth-child(4) {
+  animation-delay: 0.21s;
+}
+.cockpit .panel:nth-child(5) {
+  animation-delay: 0.27s;
+}
 
 /* ── Waterfall ────────────────────────────────────────────────────────── */
 
@@ -819,6 +856,151 @@ a.placard__value:hover {
 
 .wf-row:hover {
   background: rgba(255, 255, 255, 0.028);
+}
+
+/* A turn row is a real <button>, so the UA's own button styling has to go —
+   but only the borders it adds, never `border-left`, which the degraded state
+   below owns. Resetting the shorthand here would make these two rules order-
+   dependent, and the losing order silently drops the chaos edge. */
+.wf-row--turn {
+  appearance: none;
+  width: 100%;
+  margin: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The open row reads as the head of the drawer beneath it: joined at the
+   bottom edge, and lit on the left the way a selected instrument would be. */
+.wf-row--open {
+  background: var(--panel-2);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  /* Closes the grid gap so the drawer reads as the same object, not the next
+     row down. */
+  margin-bottom: -2px;
+}
+
+/* `.wf-row:hover` is a class plus a pseudo-class, so it outranks `--open` and
+   would otherwise darken an open row on hover. */
+.wf-row--open:hover {
+  background: var(--panel-hover);
+}
+
+.wf-row--open:not(.wf-row--degraded) {
+  border-left-color: var(--line-strong);
+}
+
+.wf-drawer {
+  margin: 0 0 4px;
+  padding: 14px 14px 15px;
+  border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  background: var(--panel-2);
+  animation: rise 0.22s ease both;
+}
+
+/* ── Turn detail ──────────────────────────────────────────────────────── */
+
+.detail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 26px;
+  align-items: start;
+}
+
+.detail__group .legend {
+  display: block;
+  padding-bottom: 7px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* The drawer's lists are denser than a rail panel's: three of them share a row
+   and every value is a figure rather than a sentence. */
+.detail .spec-list div {
+  padding: 5px 0;
+  font-size: 11.5px;
+}
+
+.detail .spec-list dt {
+  width: 62px;
+  font-size: 9.5px;
+}
+
+.detail .spec-list dd {
+  font-size: 11.5px;
+}
+
+.detail__flags {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* ── Tool chain ───────────────────────────────────────────────────────── */
+
+.chain {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.chain__row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.chain__ord {
+  font-size: 10px;
+  color: var(--text-mute);
+}
+
+/* Height matches the viewBox so the non-uniform stretch is horizontal only. */
+.chain__bar {
+  display: block;
+  width: 100%;
+  height: 8px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* The invocation's own wait, and the tail it spent streaming — the same
+   distinction the waterfall's solid bar and dimmed lane make, in miniature. */
+.chain__ttft {
+  fill: var(--stage-ttft);
+}
+
+.chain__tail {
+  fill: var(--stage-ttft);
+  opacity: 0.34;
+}
+
+.chain__figure {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.chain__figure small {
+  font-family: var(--font-display);
+  font-size: 9px;
+  color: var(--text-mute);
+  margin-left: 3px;
 }
 
 /* Always mounted, even with no turns — this is the element whose chart column
@@ -1032,6 +1214,12 @@ a.placard__value:hover {
   font-weight: 500;
 }
 
+/* The rows are interactive and nothing else on the page says so. */
+.wf-key__hint {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
 .wf-empty {
   margin: 0;
   padding: 34px 0 30px;
@@ -1226,6 +1414,16 @@ a.placard__value:hover {
   background: var(--panel);
 }
 
+/* Three readings of one connection, so they share a row rather than forming a
+   2×2 block with a hole in it. */
+.ledger--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ledger--three .ledger__cell {
+  padding: 11px 11px 12px;
+}
+
 .ledger__cell--wide {
   grid-column: 1 / -1;
 }
@@ -1264,6 +1462,57 @@ a.placard__value:hover {
 .ledger__cell--cost .ledger__value {
   color: var(--accent);
   font-size: 25px;
+}
+
+/* The derived rate, subordinate to the total it comes from. */
+.ledger__sub {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.ledger__sub span {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-left: 4px;
+}
+
+/* Three tiles in a 316px rail: the figure has to give up a little size so the
+   unit still fits beside it. */
+.ledger__value--tight {
+  font-size: 16px;
+}
+
+/* ── Sparklines ───────────────────────────────────────────────────────── */
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin-top: 7px;
+  overflow: visible;
+}
+
+/* Blue throughout: every figure in this panel is a property of the caller's
+   link, and giving each tile its own hue would invent an encoding the page
+   does not have. */
+.spark__line {
+  fill: none;
+  stroke: var(--caller);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Fewer than two readings: a baseline, so the tile keeps its height and the
+   panel does not jump when the second sample lands. */
+.spark__flat {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
 }
 
 .ledger__caveat {
@@ -1328,6 +1577,36 @@ a.placard__value:hover {
   font-size: 10.5px;
   line-height: 1.55;
   color: var(--text-mute);
+}
+
+/* ── Live calls (air-traffic strip) ───────────────────────────────────── */
+
+/* Sits above the hero at full width, so a phone meets it before the pitch. It
+   wears the green live language rather than an alert colour: a call in progress
+   is the system working, and amber and red are spent only on chaos. */
+.live-calls {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.live-call {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background: var(--accent-wash);
+}
+
+.live-call__text {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
 }
 
 /* ── Debrief bar ──────────────────────────────────────────────────────── */
@@ -1567,8 +1846,31 @@ a.placard__value:hover {
   .ledger {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  /* Re-asserted: the rule above is later in the cascade and would otherwise
+     fold three transport tiles into a 2 + 1. Full-width on a phone, three
+     tiles fit comfortably. */
+  .ledger--three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .chaos {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Three columns of figures do not survive a 360px screen; stacked, each
+     group keeps its own heading and reads as a short list. */
+  .detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .wf-drawer {
+    padding: 12px 12px 13px;
+  }
+  .detail .spec-list div,
+  .detail .spec-list dd {
+    font-size: 12px;
+  }
+  .chain__figure {
+    font-size: 11px;
   }
   .spec-list dt {
     width: 62px;

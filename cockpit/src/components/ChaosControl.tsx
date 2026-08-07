@@ -6,14 +6,29 @@
 
 const OPTIONS = [0, 400, 800, 1500] as const;
 
+/** The reason the switch is dead when nobody has said otherwise. */
+const DISABLED_NOTE = 'Available once you are in a live call — a replay is already written.';
+
 interface ChaosControlProps {
   delayMs: number;
   acknowledged: boolean;
   disabled: boolean;
+  /**
+   * Replaces the disabled copy for callers whose reason is a different one — an
+   * observer is not looking at a finished recording, and telling them to wait
+   * for a live call would be advice they cannot act on.
+   */
+  disabledNote?: string;
   onChange: (delayMs: number) => void;
 }
 
-export function ChaosControl({ delayMs, acknowledged, disabled, onChange }: ChaosControlProps) {
+export function ChaosControl({
+  delayMs,
+  acknowledged,
+  disabled,
+  disabledNote,
+  onChange,
+}: ChaosControlProps) {
   return (
     <div>
       <div className="chaos" role="group" aria-label="Injected LLM latency">
@@ -33,7 +48,7 @@ export function ChaosControl({ delayMs, acknowledged, disabled, onChange }: Chao
       </div>
       <p className="chaos__note">
         {disabled
-          ? 'Available once you are in a live call — a replay is already written.'
+          ? (disabledNote ?? DISABLED_NOTE)
           : delayMs === 0
             ? 'Milliseconds added ahead of every LLM call. Turn it up and watch the amber band grow.'
             : acknowledged

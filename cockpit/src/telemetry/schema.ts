@@ -13,7 +13,8 @@ export type EnvelopeType =
   | 'interruption'
   | 'usage'
   | 'chaos'
-  | 'call_meta';
+  | 'call_meta'
+  | 'transport';
 
 export interface EnvelopeBase<T extends EnvelopeType, P> {
   v: number;
@@ -35,6 +36,12 @@ export interface SttMetrics {
   model: string;
 }
 
+/** One invocation of a tool-calling chain, in call order. */
+export interface LlmChainLink {
+  ttft: number;
+  duration: number;
+}
+
 export interface LlmMetrics {
   /** Effective perceived first token across the whole chain — see the schema. */
   ttft: number;
@@ -45,6 +52,12 @@ export interface LlmMetrics {
   tokens_per_second: number;
   /** Invocations in this turn; > 1 means the model called tools. Absent = 1. */
   llm_calls?: number;
+  /**
+   * Per-invocation breakdown, emitted only when `llm_calls > 1`. Optional by
+   * contract: an agent that does not report it is not malformed, and the turn
+   * still renders from the summed `ttft`/`duration` above.
+   */
+  chain?: LlmChainLink[];
   model: string;
 }
 
@@ -103,6 +116,28 @@ export interface ChaosPayload {
   active: boolean;
 }
 
+/** Matches the `ConnectionQuality` enum livekit-client exports, value for value. */
+export type TransportQuality = 'excellent' | 'good' | 'poor' | 'lost' | 'unknown';
+
+/**
+ * A WebRTC transport reading, sampled BY THE COCKPIT rather than the agent —
+ * the agent never sees the caller's network path. Never published on the data
+ * channel; it reaches the store locally and rides along in browser-posted
+ * debriefs.
+ *
+ * Only `quality` is required. The SDK reports it for every session, but the
+ * numeric stats come from an `RTCStatsReport` that a muted microphone, a
+ * mid-reconnect transport or an SDK that has moved on can all decline to
+ * provide — and a panel that needs three numbers to render is a panel that
+ * goes blank exactly when the connection gets interesting.
+ */
+export interface TransportPayload {
+  rtt_ms?: number;
+  jitter_ms?: number;
+  packet_loss_pct?: number;
+  quality: TransportQuality;
+}
+
 export interface CallMetaPayload {
   call_id: string;
   room: string;
@@ -118,7 +153,8 @@ export type Envelope =
   | EnvelopeBase<'interruption', InterruptionPayload>
   | EnvelopeBase<'usage', UsagePayload>
   | EnvelopeBase<'chaos', ChaosPayload>
-  | EnvelopeBase<'call_meta', CallMetaPayload>;
+  | EnvelopeBase<'call_meta', CallMetaPayload>
+  | EnvelopeBase<'transport', TransportPayload>;
 
 /** Browser -> agent, published on topic `cockpit-control`. */
 export interface ChaosControlMessage {
@@ -171,6 +207,18 @@ const isDuration = (value: unknown): value is number =>
 const isCount = (value: unknown): value is number =>
   isNumber(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 
+/**
+ * Transport figures arrive in milliseconds, not seconds. A minute of round-trip
+ * time is not a slow network, it is a broken reading — and an unbounded one
+ * flattens every sparkline drawn beside it into a floor.
+ */
+const MAX_TRANSPORT_MS = 60_000;
+const isMillis = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= MAX_TRANSPORT_MS;
+
+const isPercent = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= 100;
+
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 
@@ -195,6 +243,18 @@ const isSttMetrics: Guard<SttMetrics> = (value): value is SttMetrics =>
   isDuration(value.audio_duration) &&
   isString(value.model);
 
+/**
+ * Bounds the tool chain. Each link becomes a drawn mini-bar, so an unbounded
+ * array is an unbounded amount of DOM that any visitor can put in a debrief.
+ * No real turn calls a model sixty-four times.
+ */
+export const MAX_LLM_CHAIN_LINKS = 64;
+
+const isLlmChain: Guard<LlmChainLink[]> = (value): value is LlmChainLink[] =>
+  Array.isArray(value) &&
+  value.length <= MAX_LLM_CHAIN_LINKS &&
+  value.every((link) => isRecord(link) && isDuration(link.ttft) && isDuration(link.duration));
+
 const isLlmMetrics: Guard<LlmMetrics> = (value): value is LlmMetrics =>
   isRecord(value) &&
   isDuration(value.ttft) &&
@@ -203,6 +263,7 @@ const isLlmMetrics: Guard<LlmMetrics> = (value): value is LlmMetrics =>
   isCount(value.completion_tokens) &&
   isCount(value.tokens_per_second) &&
   optional(isCount)(value.llm_calls) &&
+  optional(isLlmChain)(value.chain) &&
   isString(value.model);
 
 const isTtsMetrics: Guard<TtsMetrics> = (value): value is TtsMetrics =>
@@ -262,6 +323,26 @@ const isCallMetaPayload = (value: unknown): boolean =>
   isString(value.pipeline.tts) &&
   isMember<CallMetaPayload['entry']>('browser', 'sip')(value.entry);
 
+const isTransportQuality = isMember<TransportQuality>(
+  'excellent',
+  'good',
+  'poor',
+  'lost',
+  'unknown',
+);
+
+/**
+ * The quality is mandatory and the three figures are not — but a figure that is
+ * *present* still has to be a real number. `{"rtt_ms": "48ms"}` and
+ * `{"packet_loss_pct": 4000}` both reach a sparkline's y-scale otherwise.
+ */
+const isTransportPayload = (value: unknown): boolean =>
+  isRecord(value) &&
+  isTransportQuality(value.quality) &&
+  optional(isMillis)(value.rtt_ms) &&
+  optional(isMillis)(value.jitter_ms) &&
+  optional(isPercent)(value.packet_loss_pct);
+
 /** A Map, not an object literal: `payload_guards["toString"]` is a live method. */
 const PAYLOAD_GUARDS = new Map<string, (payload: unknown) => boolean>([
   ['turn', isTurnPayload],
@@ -271,6 +352,7 @@ const PAYLOAD_GUARDS = new Map<string, (payload: unknown) => boolean>([
   ['usage', isUsagePayload],
   ['chaos', isChaosPayload],
   ['call_meta', isCallMetaPayload],
+  ['transport', isTransportPayload],
 ]);
 
 /**

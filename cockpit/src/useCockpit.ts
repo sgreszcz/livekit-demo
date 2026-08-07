@@ -17,7 +17,15 @@ import {
   type EnvelopeLog,
 } from './telemetry/store';
 
-export type CockpitMode = 'idle' | 'connecting' | 'live' | 'replay' | 'ended' | 'error';
+export type CockpitMode =
+  | 'idle'
+  | 'connecting'
+  | 'live'
+  | 'replay'
+  /** Watching someone else's call, read-only: no microphone, no chaos switch. */
+  | 'observing'
+  | 'ended'
+  | 'error';
 
 export interface ShareResult {
   id: string;
@@ -34,6 +42,8 @@ export interface Cockpit {
   sharing: boolean;
   startCall: () => Promise<void>;
   startReplay: () => void;
+  startObserving: (room: string) => Promise<void>;
+  stopObserving: () => void;
   endCall: () => Promise<void>;
   reset: () => void;
   setChaosDelay: (ms: number) => Promise<void>;
@@ -159,6 +169,59 @@ export function useCockpit(): Cockpit {
     }
   }, [beginSource, callbacksFor]);
 
+  /**
+   * Joins a call already in progress, read-only.
+   *
+   * Deliberately the same `beginSource()` / generation / AbortController
+   * machinery as `startCall`, because the isolation it buys is exactly what an
+   * observer needs: a caller session and an observer session are two rooms with
+   * two telemetry streams, and an envelope or a disconnect from the one the
+   * visitor just left must never land in the one they just joined. Watching two
+   * different rooms in a row is the same problem, and the generation counter is
+   * the same answer.
+   */
+  const startObserving = useCallback(
+    async (room: string) => {
+      const generation = beginSource();
+      const controller = new AbortController();
+      connectRef.current = controller;
+      setMode('connecting');
+
+      try {
+        // Loaded on demand for the same reason as `startCall`: livekit-client is
+        // the bulk of the bundle, and most visitors never join a room at all.
+        const { CockpitSession } = await import('./livekit/session');
+        const session = await CockpitSession.observe(
+          room,
+          callbacksFor(generation),
+          controller.signal,
+        );
+
+        if (generationRef.current !== generation) {
+          await session.disconnect().catch(() => {});
+          return;
+        }
+
+        connectRef.current = null;
+        sessionRef.current = session;
+        setMode('observing');
+      } catch (cause) {
+        if (generationRef.current !== generation) return;
+        setError(cause instanceof Error ? cause.message : 'Could not watch that call');
+        setMode('error');
+      }
+    },
+    [beginSource, callbacksFor],
+  );
+
+  /**
+   * Leaving is not ending: the call carries on without this browser, so there is
+   * no debrief to offer and nothing to share. Straight back to the hero.
+   */
+  const stopObserving = useCallback(() => {
+    reset();
+  }, [reset]);
+
   const endCall = useCallback(async () => {
     // Ending is a teardown like any other: retire the generation so the room's
     // own disconnect event cannot re-enter with stale state, and abort a connect
@@ -173,15 +236,26 @@ export function useCockpit(): Cockpit {
     setMode('ended');
   }, []);
 
+  /**
+   * Both of these publish, and an observer session refuses to publish. The guard
+   * is here rather than only in the UI because the local state must not move
+   * either: a slider that shows +800 ms nobody asked the agent for, or a mic
+   * button that claims to have muted a microphone that does not exist, is an
+   * instrument reading something that never happened.
+   */
   const setChaosDelay = useCallback(async (ms: number) => {
+    const session = sessionRef.current;
+    if (session?.observing) return;
     setChaosDelayMs(ms);
-    await sessionRef.current?.setChaosDelay(ms).catch(() => {});
+    await session?.setChaosDelay(ms).catch(() => {});
   }, []);
 
   const toggleMic = useCallback(async () => {
+    const session = sessionRef.current;
+    if (session?.observing) return;
     const next = !micEnabled;
     setMicEnabled(next);
-    await sessionRef.current?.setMicrophoneEnabled(next).catch(() => {});
+    await session?.setMicrophoneEnabled(next).catch(() => {});
   }, [micEnabled]);
 
   const shareCall = useCallback(async () => {
@@ -225,6 +299,8 @@ export function useCockpit(): Cockpit {
     sharing,
     startCall,
     startReplay,
+    startObserving,
+    stopObserving,
     endCall,
     reset,
     setChaosDelay,
