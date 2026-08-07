@@ -35,8 +35,10 @@ import asyncio
 import dataclasses
 import json
 import logging
+import random
 from collections import deque
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, Literal
 
 from livekit.agents import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -59,12 +61,17 @@ __all__ = [
     "MAX_COMPLETION_TOKENS",
     "MAX_DELAY_MS",
     "MIN_COMPLETION_TOKENS",
+    "VOICE_INJECTIONS",
     "AppliedChaosLog",
     "ChaosCommand",
     "ChaosController",
+    "ChaosIntensity",
     "DelayedLLM",
     "DelayedTTS",
+    "VoiceChaosPlan",
+    "VoiceInjection",
     "parse_control_message",
+    "plan_voice_chaos",
 ]
 
 logger = logging.getLogger("glass-cockpit.chaos")
@@ -341,6 +348,152 @@ def parse_control_message(data: bytes) -> ChaosCommand | None:
         max_completion_tokens=field("max_completion_tokens", _parse_tokens),
     )
     return None if command.is_empty else command
+
+
+# -------------------------------------------------------------------- voice control
+
+# The second way to reach the same controller: the caller asks out loud and the model
+# calls `GlassCockpitAgent.set_chaos`. A caller on a SIP trunk has no dashboard at all,
+# so without this the demo's best moment is unreachable from a phone.
+#
+# The vocabulary is deliberately not the wire schema. The control channel takes four
+# independent numeric knobs because a browser panel has four widgets; a language model
+# choosing between four numbers and their units gets them wrong. What it is reliable at
+# is picking one value from a short enum, so that is all this asks of it — the numbers
+# live here, where they can be tuned and tested.
+
+VoiceInjection = Literal[
+    "latency", "voice_delay", "slow_model", "token_starvation", "random", "off"
+]
+ChaosIntensity = Literal["mild", "severe"]
+
+#: The concrete injections, and the set ``random`` picks from.
+VOICE_INJECTIONS: tuple[str, ...] = ("latency", "voice_delay", "slow_model", "token_starvation")
+
+# Tuned to be *audible*, not merely measurable. A caller who asked for this over a phone
+# has no waterfall in front of them, so a degradation they cannot hear is a degradation
+# that did not happen — every value here is above the threshold where a listener says
+# "that got worse" unprompted.
+_LLM_DELAY_MS: dict[str, int] = {"mild": 800, "severe": 1500}
+_TTS_DELAY_MS: dict[str, int] = {"mild": 300, "severe": 600}
+_MAX_TOKENS: dict[str, int] = {"mild": 30, "severe": 15}
+
+# Every plan sets all four fields, so a spoken request always defines the WHOLE state
+# rather than layering onto whatever is already armed. Two reasons. The model cannot see
+# the current state, so an additive tool would let a caller who asked for three things
+# in a row end up somewhere none of them describe — and stacking severe latency, the
+# heavy model and a fifteen-token clamp makes the agent too broken to ask it to stop.
+# The ack carries the full state, so the browser panel follows the change either way.
+_OFF = ChaosCommand(llm_delay_ms=0, tts_delay_ms=0, slow_model=False, max_completion_tokens=None)
+
+# What the model says back. Written to be SPOKEN: numbers expanded into words, the
+# injection named in terms a listener understands rather than a field name, and always
+# the two things the persona must not be left to improvise — that the change lands on
+# this very answer, and that the dashboard will flag the turn.
+_SPOKEN: dict[tuple[str, str], str] = {
+    ("latency", "mild"): (
+        "I've put eight hundred milliseconds of artificial latency in front of my language "
+        "model. You'll hear it on this very answer, and the dashboard will flag this turn "
+        "as degraded."
+    ),
+    ("latency", "severe"): (
+        "I've put a second and a half of artificial latency in front of my language model. "
+        "You'll hear it on this very answer, and the dashboard will flag this turn as "
+        "degraded."
+    ),
+    ("voice_delay", "mild"): (
+        "I've put three hundred milliseconds of artificial delay in front of my speech "
+        "synthesis. You'll hear the extra pause before I start talking, and the dashboard "
+        "will flag this turn as degraded."
+    ),
+    ("voice_delay", "severe"): (
+        "I've put six hundred milliseconds of artificial delay in front of my speech "
+        "synthesis. You'll hear the extra pause before I start talking, and the dashboard "
+        "will flag this turn as degraded."
+    ),
+    # One switch, no intensity: there is a heavier model or there isn't.
+    ("slow_model", "mild"): (
+        "I've swapped myself onto a deliberately heavier language model. It takes noticeably "
+        "longer to think, and the dashboard will flag this turn as degraded."
+    ),
+    ("token_starvation", "mild"): (
+        "I've clamped myself to thirty tokens per answer. I'm going to get cut off "
+        "mid-sentence — that's the point, not a fault — and the dashboard will flag this "
+        "turn as degraded."
+    ),
+    ("token_starvation", "severe"): (
+        "I've clamped myself to fifteen tokens per answer. I'm going to get cut off "
+        "mid-sentence — that's the point, not a fault — and the dashboard will flag this "
+        "turn as degraded."
+    ),
+    ("off", "mild"): (
+        "Chaos is off. No artificial latency, no heavier model, no token clamp — I'm back "
+        "to normal, and the dashboard will stop flagging turns as degraded."
+    ),
+}
+_SPOKEN[("slow_model", "severe")] = _SPOKEN[("slow_model", "mild")]
+_SPOKEN[("off", "severe")] = _SPOKEN[("off", "mild")]
+
+_RANDOM_PREFIX = "I picked one at random. "
+
+
+@dataclasses.dataclass(frozen=True)
+class VoiceChaosPlan:
+    """A spoken chaos request, resolved into what to apply and what to say."""
+
+    injection: str
+    """The CONCRETE injection — never ``"random"``, which is resolved here."""
+    intensity: str
+    command: ChaosCommand
+    """Full state: every field is given, so applying it defines all four knobs."""
+    spoken: str
+    """The confirmation, ready to be read aloud. Never JSON, never bare numbers."""
+    chosen_at_random: bool = False
+
+
+def plan_voice_chaos(
+    injection: str,
+    intensity: str = "mild",
+    *,
+    chooser: Callable[[Sequence[str]], str] = random.choice,
+) -> VoiceChaosPlan:
+    """Resolve a spoken chaos request. Pure: no controller, no publisher, no SDK.
+
+    ``chooser`` is the seam that makes ``"random"`` testable — it defaults to
+    :func:`random.choice` and is injected in tests, so nothing here needs a seeded
+    global RNG that a parallel test could disturb.
+
+    Raises ``ValueError`` for an injection outside the enum. That cannot arrive through
+    the tool — the SDK validates the argument against the ``Literal`` before the tool
+    body runs, and hands the model a ``ToolError`` to self-correct from — so this is the
+    belt for a direct caller. Guessing would be worse than refusing: the nearest guess
+    to an unrecognised word is ``"off"``, which would silently disarm a caller's chaos.
+    """
+    level = intensity if intensity in ("mild", "severe") else "mild"
+    at_random = injection == "random"
+    chosen = chooser(VOICE_INJECTIONS) if at_random else injection
+    if chosen not in VOICE_INJECTIONS and chosen != "off":
+        raise ValueError(f"unknown chaos injection: {injection!r}")
+
+    if chosen == "latency":
+        command = dataclasses.replace(_OFF, llm_delay_ms=_LLM_DELAY_MS[level])
+    elif chosen == "voice_delay":
+        command = dataclasses.replace(_OFF, tts_delay_ms=_TTS_DELAY_MS[level])
+    elif chosen == "slow_model":
+        command = dataclasses.replace(_OFF, slow_model=True)
+    elif chosen == "token_starvation":
+        command = dataclasses.replace(_OFF, max_completion_tokens=_MAX_TOKENS[level])
+    else:
+        command = _OFF
+
+    spoken = _SPOKEN[(chosen, level)]
+    return VoiceChaosPlan(
+        injection=chosen,
+        intensity=level,
+        command=command,
+        spoken=_RANDOM_PREFIX + spoken if at_random else spoken,
+        chosen_at_random=at_random,
+    )
 
 
 # --------------------------------------------------------------------------- LLM

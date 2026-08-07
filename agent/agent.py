@@ -14,7 +14,9 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from dotenv import load_dotenv
@@ -41,10 +43,14 @@ from livekit.agents.voice.speech_handle import SpeechHandle
 
 from chaos import (
     DEFAULT_SLOW_LLM_MODEL,
+    ChaosCommand,
     ChaosController,
+    ChaosIntensity,
     DelayedLLM,
     DelayedTTS,
+    VoiceInjection,
     parse_control_message,
+    plan_voice_chaos,
 )
 from telemetry import (
     CONTROL_TOPIC,
@@ -94,15 +100,29 @@ What you can explain, when asked:
 Time to first token is the language model starting to respond. Time to first byte is \
 speech synthesis starting to return audio. Their sum is roughly what the caller \
 experiences as "how long before it answered me".
-- Chaos mode: from the dashboard the visitor can degrade this very call and watch the \
-waterfall react the way a slow region or an overloaded provider would look in \
-production. Four injections: artificial latency in front of the language model, \
-artificial latency in front of speech synthesis, swapping you onto a deliberately \
-heavier model, and clamping how many tokens you are allowed to answer with — that last \
-one will cut you off mid-sentence, which is the point, so do not apologise for it or \
-work around it.
+- Chaos mode: the visitor can degrade this very call and watch the waterfall react the \
+way a slow region or an overloaded provider would look in production. They can arm it \
+from the dashboard, or simply ask you out loud — which is the only way for someone on \
+a phone. Four injections: artificial latency in front of the language model, artificial \
+latency in front of speech synthesis, swapping you onto a deliberately heavier model, \
+and clamping how many tokens you are allowed to answer with — that last one will cut \
+you off mid-sentence, which is the point, so do not apologise for it or work around it.
 - Your own numbers: call the get_call_metrics tool and read the result back \
 conversationally. Never invent latency or cost figures — always use the tool.
+
+Offering chaos mode:
+- Once you have actually answered something of theirs — their first real question, or \
+any time they ask what you can do or what else there is — offer it, briefly, and do not \
+keep offering: you can degrade yourself on purpose while they listen, with artificial \
+latency, a heavier model, or answers clipped off mid-sentence, and you can pick one at \
+random if they would rather be surprised. Mild or severe, their choice.
+- Never arm it unless they asked for it or agreed to it. Never arm it unprompted.
+- Arm it with the set_chaos tool, always — it is the only thing that actually changes \
+the pipeline. Its reply is written to be spoken, so say what it gives you rather than \
+inventing your own numbers, and always tell them what you applied and that the \
+dashboard will flag this turn as degraded.
+- If they ask you to stop it, turn it off, or go back to normal, call set_chaos with \
+"off".
 
 How you speak:
 - Professional and concise, the way a good solutions engineer demos to a customer. \
@@ -144,12 +164,72 @@ GREETING = (
 )
 
 
-class GlassCockpitAgent(Agent):
-    """The demo guide, with read access to the call's own telemetry."""
+class ChaosBroadcaster:
+    """Applies a chaos change and announces the resulting state. One per call.
 
-    def __init__(self, store: TurnStore) -> None:
+    Chaos can now be armed two ways — the browser's ``cockpit-control`` packets and the
+    caller's own voice — and the two must never be able to disagree. They share this:
+    one :class:`ChaosController`, and one place the ack envelope is built. A second
+    envelope literal somewhere else is exactly how a browser panel ends up showing a
+    state the pipeline is not in.
+    """
+
+    def __init__(self, chaos: ChaosController, publisher: TelemetryPublisher) -> None:
+        self._chaos = chaos
+        self._publisher = publisher
+
+    @property
+    def chaos(self) -> ChaosController:
+        return self._chaos
+
+    def apply(self, command: ChaosCommand) -> dict[str, Any]:
+        """Apply a command, publish the full-state ack, and return the envelope sent.
+
+        The ack carries the whole state, not the delta: a cockpit that joined mid-call,
+        one whose own request was partly rejected as malformed, or one that never asked
+        for this change at all because the caller asked for it out loud, has no other
+        way to learn what the agent is actually doing.
+        """
+        self._chaos.apply(command)
+        payload = self._chaos.envelope_payload()
+        logger.info("chaos state: %s", payload)
+        env = envelope("chaos", payload, ts=time.time())
+        self._publisher.emit(env)
+        return env
+
+
+def apply_control_packet(data: bytes, broadcaster: ChaosBroadcaster) -> dict[str, Any] | None:
+    """The browser control path: parse a ``cockpit-control`` payload and apply it.
+
+    Module level rather than a closure so the data-channel path is reachable from a
+    test — the voice path has to be provably identical to it, and a path that can only
+    be exercised by standing up a room cannot be compared against anything.
+    """
+    command = parse_control_message(data)
+    if command is None:
+        return None
+    return broadcaster.apply(command)
+
+
+class GlassCockpitAgent(Agent):
+    """The demo guide, with read access to the call's own telemetry.
+
+    Both tools reach the live call through objects handed in at construction — the turn
+    store for reading, the chaos broadcaster for writing — rather than through anything
+    global, so the agent is exactly as testable as the pieces it is given.
+    """
+
+    def __init__(
+        self,
+        store: TurnStore,
+        chaos: ChaosBroadcaster,
+        *,
+        chooser: Callable[[Sequence[str]], str] = random.choice,
+    ) -> None:
         super().__init__(instructions=INSTRUCTIONS)
         self._store = store
+        self._chaos = chaos
+        self._chooser = chooser
 
     @function_tool
     async def get_call_metrics(self, ctx: RunContext) -> str:
@@ -160,6 +240,41 @@ class GlassCockpitAgent(Agent):
         result back conversationally rather than reciting it verbatim.
         """
         return self._store.summary()
+
+    @function_tool
+    async def set_chaos(
+        self,
+        ctx: RunContext,
+        injection: VoiceInjection,
+        intensity: ChaosIntensity = "mild",
+    ) -> str:
+        """Degrade this call on purpose, the way the dashboard's chaos panel does.
+
+        Call this ONLY when the visitor has asked for a degradation or agreed to one
+        being offered. Never call it unprompted.
+
+        injection:
+          latency — artificial delay in front of the language model, so answers start
+            coming back later.
+          voice_delay — artificial delay in front of speech synthesis, so there is a
+            longer pause before you start talking.
+          slow_model — swap onto a deliberately heavier language model.
+          token_starvation — clamp how many tokens you may answer with, so answers cut
+            off mid-sentence. That is the intended effect; do not apologise for it.
+          random — pick one of the four at random, for a visitor who would rather be
+            surprised.
+          off — clear every injection and return to normal. Use this whenever they ask
+            you to stop, turn it off, or go back to normal.
+
+        intensity: "mild" or "severe". Ignored by slow_model, which has one setting.
+
+        Each call replaces the whole chaos state rather than adding to it, so exactly
+        one injection is ever armed and repeating a call is harmless. The reply is a
+        sentence written to be spoken — say it, rather than describing it.
+        """
+        plan = plan_voice_chaos(injection, intensity, chooser=self._chooser)
+        self._chaos.apply(plan.command)
+        return plan.spoken
 
 
 def _wire_telemetry(
@@ -370,6 +485,8 @@ async def entrypoint(ctx: JobContext) -> None:
         applied_tts_chaos=chaos.tts_applied.take,
     )
     publisher = TelemetryPublisher(ctx.room)
+    # The one path to the controller, shared by the browser panel and the voice tool.
+    broadcaster = ChaosBroadcaster(chaos, publisher)
     started_at = time.time()
 
     await ctx.connect()
@@ -379,16 +496,7 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_data(packet: rtc.DataPacket) -> None:
         if packet.topic != CONTROL_TOPIC:
             return
-        command = parse_control_message(packet.data)
-        if command is None:
-            return
-        chaos.apply(command)
-        # The ack carries the whole state, not the delta: a cockpit that joined
-        # mid-call, or one whose own request was partly rejected as malformed, has no
-        # other way to learn what the agent is actually doing.
-        payload = chaos.envelope_payload()
-        logger.info("chaos state: %s", payload)
-        publisher.emit(envelope("chaos", payload, ts=time.time()))
+        apply_control_packet(packet.data, broadcaster)
 
     @ctx.room.on("participant_connected")
     def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
@@ -527,7 +635,7 @@ async def entrypoint(ctx: JobContext) -> None:
             _finish(_close_reason(ev.reason), ev.created_at), name="cockpit-final-debrief"
         )
 
-    await session.start(agent=GlassCockpitAgent(store), room=ctx.room)
+    await session.start(agent=GlassCockpitAgent(store, broadcaster), room=ctx.room)
     # say(), not generate_reply(): the greeting is fixed text, so there is nothing to
     # think about and no reason to make the visitor wait for a completion before the
     # first audio byte. It still goes through the full speech path — a SpeechHandle,
