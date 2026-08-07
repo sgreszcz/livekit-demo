@@ -9,6 +9,7 @@ import { Footer } from '../components/Footer';
 import { LiveCallCard, type LiveCallEntry } from '../components/LiveCallCard';
 import { Mark } from '../components/Mark';
 import { MiniWaterfall } from '../components/MiniWaterfall';
+import { Tabs } from '../components/Tabs';
 import { PHONE_DISPLAY, PHONE_E164 } from '../config';
 import { fixtureEnvelopes } from '../telemetry/fixtureSource';
 import { roomElapsedSeconds } from '../telemetry/activeRooms';
@@ -29,7 +30,8 @@ const LAMP: Record<CockpitMode, { className: string; label: string }> = {
   error: { className: 'lamp--fault', label: 'Fault' },
 };
 
-const OBSERVER_CHAOS_NOTE = 'Chaos injection is caller-side — this session is read-only.';
+const OBSERVER_CHAOS_NOTE =
+  'Chaos injection is caller-side — this session is read-only. What is armed still shows.';
 
 export function HomeView() {
   const cockpit = useCockpit();
@@ -73,6 +75,7 @@ export function HomeView() {
           <Mark />
           Glass <span>Cockpit</span>
         </div>
+        <Tabs route="home" />
         <span className={`lamp ${LAMP[mode].className}`}>{LAMP[mode].label}</span>
         <div className="topbar__spacer" />
         {/* One flex child holds every control, so when the bar wraps on a phone
@@ -151,10 +154,10 @@ export function HomeView() {
              — showing it here would attribute this browser's network to them. */
           live={mode === 'live'}
           chaos={{
-            delayMs: cockpit.chaosDelayMs,
+            request: cockpit.chaosRequest,
             disabled: mode !== 'live',
             note: mode === 'observing' ? OBSERVER_CHAOS_NOTE : undefined,
-            onChange: (value) => void cockpit.setChaosDelay(value),
+            onChange: (patch) => void cockpit.setChaos(patch),
           }}
         />
       ) : null}

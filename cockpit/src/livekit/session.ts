@@ -18,13 +18,26 @@ import {
   type RemoteTrack,
   type RemoteTrackPublication,
 } from 'livekit-client';
-import { CONTROL_TOPIC, SCHEMA_VERSION, TELEMETRY_TOPIC, isEnvelope } from '../telemetry/schema';
+import {
+  CONTROL_TOPIC,
+  SCHEMA_VERSION,
+  TELEMETRY_TOPIC,
+  definedInjections,
+  isEnvelope,
+} from '../telemetry/schema';
 import type {
   ChaosControlMessage,
+  ChaosInjections,
   Envelope,
   TransportPayload,
   TransportQuality,
 } from '../telemetry/schema';
+import {
+  deriveAudioFields,
+  readInboundAudio,
+  readOutboundAudio,
+  type AudioStatsPair,
+} from './webrtcStats';
 
 export interface TokenResponse {
   token: string;
@@ -71,6 +84,35 @@ interface SenderStats {
 
 interface SenderStatsSource {
   getSenderStats(): Promise<SenderStats | undefined>;
+}
+
+/**
+ * The raw report, which both `LocalTrack` and `RemoteTrack` expose in
+ * livekit-client 2.21. Probed by shape for the same version-tolerance reason as
+ * `getSenderStats` above: the v1.3 figures are an enrichment, and an SDK that
+ * stops offering the report should cost the second row of the transport panel,
+ * not the call.
+ */
+interface RtcStatsSource {
+  getRTCStatsReport(): Promise<unknown>;
+}
+
+function hasRtcStats(track: unknown): track is RtcStatsSource {
+  return typeof (track as Partial<RtcStatsSource> | null | undefined)?.getRTCStatsReport ===
+    'function';
+}
+
+/** Iterates a `Map`-like without assuming it is a `Map`. */
+function values<T>(source: unknown): T[] {
+  const iterable = source as { forEach?: (callback: (value: T) => void) => void } | null;
+  if (typeof iterable?.forEach !== 'function') return [];
+  const collected: T[] = [];
+  try {
+    iterable.forEach((value) => collected.push(value));
+  } catch {
+    return [];
+  }
+  return collected;
 }
 
 /**
@@ -169,6 +211,13 @@ export class CockpitSession {
   private samplingTransport = false;
   /** Packet counters are cumulative, so loss is a delta against the last read. */
   private lastPackets: { sent: number; lost: number } | null = null;
+  /**
+   * The previous raw-stats reading, for the same reason: bitrate, jitter buffer
+   * and concealment are all rates or ratios over an interval. Null until the
+   * first sample lands, which is why those four figures appear one interval
+   * after the level meters do.
+   */
+  private lastAudioStats: AudioStatsPair | null = null;
 
   private constructor(room: Room, observing: boolean) {
     this.room = room;
@@ -392,6 +441,53 @@ export class CockpitSession {
     return null;
   }
 
+  /** The microphone this browser is publishing, if it can report raw stats. */
+  private localRtcStatsSource(): RtcStatsSource | null {
+    for (const publication of this.room.localParticipant.audioTrackPublications.values()) {
+      if (hasRtcStats(publication.track)) return publication.track;
+    }
+    return null;
+  }
+
+  /**
+   * The agent's audio track.
+   *
+   * "First subscribed remote audio track" is the right rule here rather than a
+   * lucky one: on a caller session the agent is the only other participant in
+   * the room, and the numbers derived from this are labelled as the agent's
+   * inbound speech. (An observer subscribes to the caller too — which is
+   * exactly why observers do not sample transport at all.)
+   */
+  private remoteRtcStatsSource(): RtcStatsSource | null {
+    for (const participant of values<{ audioTrackPublications?: unknown }>(
+      (this.room as { remoteParticipants?: unknown }).remoteParticipants,
+    )) {
+      for (const publication of values<{ track?: unknown }>(participant.audioTrackPublications)) {
+        if (hasRtcStats(publication.track)) return publication.track;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * One raw reading of both directions. Never throws: a report that fails to
+   * resolve is simply a direction this interval knows nothing about.
+   */
+  private async readAudioStats(): Promise<AudioStatsPair> {
+    const local = this.localRtcStatsSource();
+    const remote = this.remoteRtcStatsSource();
+
+    const [outboundReport, inboundReport] = await Promise.all([
+      local ? local.getRTCStatsReport().catch(() => undefined) : Promise.resolve(undefined),
+      remote ? remote.getRTCStatsReport().catch(() => undefined) : Promise.resolve(undefined),
+    ]);
+
+    return {
+      inbound: readInboundAudio(inboundReport),
+      outbound: readOutboundAudio(outboundReport),
+    };
+  }
+
   /**
    * Loss over the last interval, as a percentage of what we sent in it.
    *
@@ -456,6 +552,23 @@ export class CockpitSession {
         if (loss !== undefined) payload.packet_loss_pct = Math.round(loss * 100) / 100;
       }
 
+      /*
+       * The v1.3 enrichment. Kept behind its own try so a stats report that
+       * misbehaves costs the second row of the panel rather than the first —
+       * RTT, jitter and loss have been sampled successfully since v1.1 and must
+       * not start disappearing because a browser changed what it publishes
+       * about jitter buffers.
+       */
+      try {
+        const audio = await this.readAudioStats();
+        Object.assign(payload, deriveAudioFields(this.lastAudioStats, audio));
+        this.lastAudioStats = audio;
+      } catch {
+        // Re-baseline: whatever went wrong, the next interval starts clean
+        // rather than differencing against a reading that may be half-read.
+        this.lastAudioStats = null;
+      }
+
       const envelope: unknown = {
         v: SCHEMA_VERSION,
         type: 'transport',
@@ -488,14 +601,28 @@ export class CockpitSession {
     }
   }
 
-  /** Tells the agent how much artificial latency to inject; 0 turns it off. */
-  async setChaosDelay(llmDelayMs: number): Promise<void> {
+  /**
+   * Arms or disarms injections, sending only the fields that changed.
+   *
+   * A patch rather than a full state, because that is what the contract asks
+   * for: the agent applies the fields present and leaves the rest alone. It
+   * also means two cockpits pointed at one agent cannot fight — flipping the
+   * slow-model switch here does not re-assert this browser's idea of the token
+   * ceiling over the other browser's.
+   *
+   * `max_completion_tokens: null` is a value, not an omission: it is how the
+   * ceiling is taken off. `JSON.stringify` keeps nulls and drops undefineds,
+   * which is exactly the distinction the wire needs.
+   */
+  async setChaos(patch: Partial<ChaosInjections>): Promise<void> {
     this.assertWritable('Chaos injection');
-    const message: ChaosControlMessage = {
-      v: SCHEMA_VERSION,
-      type: 'chaos',
-      payload: { llm_delay_ms: llmDelayMs },
-    };
+    // Normalised before it is measured, not after: an `undefined` counts toward
+    // `Object.keys().length` and then disappears in `JSON.stringify`, so the
+    // unfiltered patch can be non-empty and the published payload empty.
+    const payload = definedInjections(patch);
+    if (Object.keys(payload).length === 0) return;
+
+    const message: ChaosControlMessage = { v: SCHEMA_VERSION, type: 'chaos', payload };
     await this.room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), {
       reliable: true,
       topic: CONTROL_TOPIC,

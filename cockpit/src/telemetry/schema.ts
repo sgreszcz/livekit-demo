@@ -1,6 +1,7 @@
 /**
  * Wire types for the Glass Cockpit telemetry contract.
- * Mirrors docs/TELEMETRY-SCHEMA.md v1 — do not change unilaterally.
+ * Mirrors docs/TELEMETRY-SCHEMA.md (envelope v1, contract v1.3) — do not change
+ * unilaterally.
  * All durations on the wire are SECONDS (SDK-native); the UI renders milliseconds.
  */
 
@@ -111,8 +112,24 @@ export interface UsagePayload {
   est_cost_usd: number;
 }
 
+/**
+ * The agent's acknowledgement, carrying the FULL current injection state (v1.3).
+ *
+ * Only `llm_delay_ms` and `active` are required, because that is all a v1.1
+ * agent ever sent and its recordings are still in KV. Every v1.3 injection is
+ * optional on the wire and reads as *off* when absent — an ack that does not
+ * mention token starvation is an agent that does not starve tokens, not an
+ * agent whose setting is unknown.
+ */
 export interface ChaosPayload {
   llm_delay_ms: number;
+  /** Delay in front of speech synthesis. Absent = 0. */
+  tts_delay_ms?: number;
+  /** The LLM swapped for a deliberately heavier one. Absent = false. */
+  slow_model?: boolean;
+  /** Completion-token ceiling; `null` and absent both mean no ceiling. */
+  max_completion_tokens?: number | null;
+  /** True when any injection is armed — the agent's own verdict, not ours. */
   active: boolean;
 }
 
@@ -136,6 +153,33 @@ export interface TransportPayload {
   jitter_ms?: number;
   packet_loss_pct?: number;
   quality: TransportQuality;
+
+  /* ── v1.3, all optional ────────────────────────────────────────────────
+   *
+   * These come from the raw `RTCStatsReport`, not from the SDK's own mapped
+   * stats objects, because the two counters that make `concealed_pct` and
+   * `jitter_buffer_ms` meaningful — `totalSamplesReceived` and
+   * `jitterBufferEmittedCount` — are not in the SDK's `AudioReceiverStats`.
+   * Browsers differ on which of these they publish, so every one of them is
+   * independently optional and the panel prints "—" for whatever is missing.
+   */
+
+  /** Agent's inbound speech level, 0..1. */
+  audio_level_in?: number;
+  /** This browser's microphone level, 0..1. */
+  audio_level_out?: number;
+  bitrate_in_kbps?: number;
+  bitrate_out_kbps?: number;
+  /** Mean inbound jitter-buffer delay over the interval, ms. */
+  jitter_buffer_ms?: number;
+  /**
+   * Share of received audio samples the decoder had to invent over the
+   * interval. This is the loss the caller can actually hear, which is not the
+   * same thing as `packet_loss_pct` — that one is the uplink, reported back by
+   * the far end, and a packet lost on the way out is not a gap in the audio
+   * this browser plays.
+   */
+  concealed_pct?: number;
 }
 
 export interface CallMetaPayload {
@@ -156,11 +200,48 @@ export type Envelope =
   | EnvelopeBase<'call_meta', CallMetaPayload>
   | EnvelopeBase<'transport', TransportPayload>;
 
+/**
+ * The four injections the control channel can arm, in the wire's own spelling.
+ *
+ * Every field is optional on the wire and the agent applies only the ones
+ * present — so a control message is a *patch*, never a full state. That is why
+ * `max_completion_tokens` is `number | null` rather than `number | undefined`:
+ * absent means "leave it alone", and `null` means "take the ceiling off". A
+ * type that could not tell those apart could not turn starvation back off.
+ */
+export interface ChaosInjections {
+  llm_delay_ms: number;
+  tts_delay_ms: number;
+  slow_model: boolean;
+  max_completion_tokens: number | null;
+}
+
+/**
+ * Drops keys whose value is `undefined`, keeping keys whose value is `null`.
+ *
+ * That is precisely the line the control channel draws, and TypeScript will not
+ * draw it here: `exactOptionalPropertyTypes` is off, so `Partial<…>` admits an
+ * explicit `undefined` and `{ max_completion_tokens: undefined }` type-checks.
+ * It also has a non-zero `Object.keys().length` and then vanishes in
+ * `JSON.stringify`, which would publish `payload: {}` — a message asking the
+ * agent to change nothing — while the cockpit optimistically redrew the switch
+ * as off. The ceiling would stay on, and every instrument would agree it was
+ * off. Passing everything through here makes the emptiness check and the wire
+ * agree on what a patch contains.
+ */
+export function definedInjections(patch: Partial<ChaosInjections>): Partial<ChaosInjections> {
+  const defined: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) defined[key] = value;
+  }
+  return defined as Partial<ChaosInjections>;
+}
+
 /** Browser -> agent, published on topic `cockpit-control`. */
 export interface ChaosControlMessage {
   v: number;
   type: 'chaos';
-  payload: { llm_delay_ms: number };
+  payload: Partial<ChaosInjections>;
 }
 
 /** Body of POST /api/debrief, and of GET /api/debrief/:id. */
@@ -218,6 +299,22 @@ const isMillis = (value: unknown): value is number =>
 
 const isPercent = (value: unknown): value is number =>
   isNumber(value) && value >= 0 && value <= 100;
+
+/**
+ * An audio level is a normalised amplitude, 0..1. A "level" of 40 is a reading
+ * in some other unit, and a meter drawn from it pins to full for the rest of
+ * the call.
+ */
+const isLevel = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= 1;
+
+/**
+ * A ceiling well above any audio bitrate WebRTC negotiates, but low enough that
+ * a bits-per-second figure mislabelled as kbps is caught rather than plotted.
+ */
+const MAX_BITRATE_KBPS = 100_000;
+const isBitrate = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= MAX_BITRATE_KBPS;
 
 const isString = (value: unknown): value is string => typeof value === 'string';
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
@@ -309,8 +406,23 @@ const isUsagePayload = (value: unknown): boolean =>
   isCount(value.tts_characters) &&
   isCount(value.est_cost_usd);
 
+/**
+ * A completion-token ceiling. `null` is a legitimate value on the wire — it is
+ * how the agent says the ceiling is off — and is therefore accepted here rather
+ * than treated as a malformed number.
+ */
+const isTokenCeiling = (value: unknown): boolean =>
+  value === undefined || value === null || isCount(value);
+
 const isChaosPayload = (value: unknown): boolean =>
-  isRecord(value) && isCount(value.llm_delay_ms) && isBoolean(value.active);
+  isRecord(value) &&
+  isCount(value.llm_delay_ms) &&
+  isBoolean(value.active) &&
+  optional(isCount)(value.tts_delay_ms) &&
+  optional(isBoolean)(value.slow_model) &&
+  // Not `optional(...)`: this one has three states, and `undefined` is one of
+  // them. Absent = unchanged from off, null = explicitly off, a count = armed.
+  isTokenCeiling(value.max_completion_tokens);
 
 const isCallMetaPayload = (value: unknown): boolean =>
   isRecord(value) &&
@@ -341,7 +453,15 @@ const isTransportPayload = (value: unknown): boolean =>
   isTransportQuality(value.quality) &&
   optional(isMillis)(value.rtt_ms) &&
   optional(isMillis)(value.jitter_ms) &&
-  optional(isPercent)(value.packet_loss_pct);
+  optional(isPercent)(value.packet_loss_pct) &&
+  // v1.3. Same rule and the same reason: present means real, absent means the
+  // panel prints a dash.
+  optional(isLevel)(value.audio_level_in) &&
+  optional(isLevel)(value.audio_level_out) &&
+  optional(isBitrate)(value.bitrate_in_kbps) &&
+  optional(isBitrate)(value.bitrate_out_kbps) &&
+  optional(isMillis)(value.jitter_buffer_ms) &&
+  optional(isPercent)(value.concealed_pct);
 
 /** A Map, not an object literal: `payload_guards["toString"]` is a live method. */
 const PAYLOAD_GUARDS = new Map<string, (payload: unknown) => boolean>([

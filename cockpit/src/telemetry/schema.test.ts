@@ -250,6 +250,128 @@ describe('isEnvelope — transport', () => {
   }
 });
 
+/**
+ * The v1.3 transport enrichment. Every field is optional, and the rule the
+ * suite exists to hold is that optional does not mean unvalidated — a level of
+ * 40 or a bitrate in bits per second reaches a meter's geometry otherwise.
+ */
+describe('isEnvelope — transport v1.3', () => {
+  const transport = (payload: unknown) => ({ v: 1, type: 'transport', ts: 1, payload });
+  const base = { quality: 'good' as const };
+
+  it('accepts a fully enriched reading', () => {
+    expect(
+      isEnvelope(
+        transport({
+          ...base,
+          rtt_ms: 48,
+          jitter_ms: 4.1,
+          packet_loss_pct: 0.4,
+          audio_level_in: 0.31,
+          audio_level_out: 0.02,
+          bitrate_in_kbps: 24.1,
+          bitrate_out_kbps: 31.7,
+          jitter_buffer_ms: 61,
+          concealed_pct: 0.4,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('accepts each new field on its own', () => {
+    // Browsers publish different subsets, so any one of these may arrive alone.
+    const alone: Record<string, number> = {
+      audio_level_in: 0.5,
+      audio_level_out: 0,
+      bitrate_in_kbps: 0,
+      bitrate_out_kbps: 12.5,
+      jitter_buffer_ms: 0,
+      concealed_pct: 100,
+    };
+    for (const [key, value] of Object.entries(alone)) {
+      expect(isEnvelope(transport({ ...base, [key]: value }))).toBe(true);
+    }
+  });
+
+  it('still accepts a v1.1 reading that carries none of them', () => {
+    expect(isEnvelope(transport({ ...base, rtt_ms: 48 }))).toBe(true);
+  });
+
+  const rejected: [string, unknown][] = [
+    ['a level above unity', { ...base, audio_level_in: 1.4 }],
+    ['a negative level', { ...base, audio_level_out: -0.1 }],
+    // The plausible version of this bug: a level read in decibels, or a
+    // percentage where an amplitude was expected. It pins a meter to full for
+    // the rest of the call.
+    ['a level in some other unit', { ...base, audio_level_in: 31 }],
+    ['a stringly-typed level', { ...base, audio_level_in: '0.3' }],
+    ['a NaN level', { ...base, audio_level_out: NaN }],
+    ['a negative bitrate', { ...base, bitrate_in_kbps: -1 }],
+    ['a bitrate that is really bits per second', { ...base, bitrate_out_kbps: 24_100_000 }],
+    ['an infinite bitrate', { ...base, bitrate_in_kbps: Infinity }],
+    ['a jitter buffer of an hour', { ...base, jitter_buffer_ms: 3_600_000 }],
+    ['a negative jitter buffer', { ...base, jitter_buffer_ms: -1 }],
+    ['concealment above 100%', { ...base, concealed_pct: 101 }],
+    ['negative concealment', { ...base, concealed_pct: -0.1 }],
+  ];
+
+  for (const [name, payload] of rejected) {
+    it(`rejects ${name}`, () => {
+      expect(isEnvelope(transport(payload))).toBe(false);
+    });
+  }
+});
+
+/**
+ * The chaos ack. The contract requires only the two v1.1 fields, because
+ * recordings made by a v1.1 agent are still in KV and must still render.
+ */
+describe('isEnvelope — chaos v1.3', () => {
+  const chaos = (payload: unknown) => ({ v: 1, type: 'chaos', ts: 1, payload });
+
+  it('accepts a v1.1 ack with nothing but the delay and the flag', () => {
+    expect(isEnvelope(chaos({ llm_delay_ms: 800, active: true }))).toBe(true);
+  });
+
+  it('accepts a full v1.3 ack', () => {
+    expect(
+      isEnvelope(
+        chaos({
+          llm_delay_ms: 800,
+          tts_delay_ms: 300,
+          slow_model: true,
+          max_completion_tokens: 30,
+          active: true,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('accepts an explicit null token ceiling, which is how it is switched off', () => {
+    // `null` is a value on this wire, not an omission — a guard that rejected
+    // it would make token starvation impossible to turn back off.
+    expect(
+      isEnvelope(chaos({ llm_delay_ms: 0, max_completion_tokens: null, active: false })),
+    ).toBe(true);
+  });
+
+  const rejected: [string, unknown][] = [
+    ['an ack with no delay', { active: true }],
+    ['an ack with no flag', { llm_delay_ms: 800 }],
+    ['a negative voice delay', { llm_delay_ms: 0, tts_delay_ms: -1, active: false }],
+    ['a stringly-typed voice delay', { llm_delay_ms: 0, tts_delay_ms: '300', active: false }],
+    ['a slow-model flag that is not a boolean', { llm_delay_ms: 0, slow_model: 'yes', active: false }],
+    ['a negative token ceiling', { llm_delay_ms: 0, max_completion_tokens: -5, active: false }],
+    ['a stringly-typed token ceiling', { llm_delay_ms: 0, max_completion_tokens: '30', active: false }],
+  ];
+
+  for (const [name, payload] of rejected) {
+    it(`rejects ${name}`, () => {
+      expect(isEnvelope(chaos(payload))).toBe(false);
+    });
+  }
+});
+
 describe('isEnvelope — llm.chain', () => {
   const withChain = (chain: unknown) => ({
     ...validTurn,

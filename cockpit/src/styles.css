@@ -108,6 +108,27 @@
   --font-display: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
+  /* Type scale.
+     Seven steps, and every size on the page is one of them — the previous
+     scale had eleven values between 9.5 and 14 px, which is not a hierarchy,
+     it is a drift. The ratios between steps are what the old scale had; what
+     changed is the floor.
+
+     `--fs-label` is that floor: 12 px, and nothing that labels an instrument
+     or annotates a chart goes below it. This page is read on a projector at
+     the back of a room and screenshotted into slide decks, and a 9.5 px
+     stencilled label survives neither. Chips and unit suffixes are the one
+     exception at 11 px, because they sit inside fixed gutters beside the
+     figure they qualify — they are punctuation on a reading, not a reading. */
+  --fs-body: 15.5px; /* page default and running prose */
+  --fs-sub: 14px; /* controls, data-list values, empty states */
+  --fs-meta: 13px; /* captions, notes, footers, secondary readouts */
+  --fs-label: 12px; /* stencilled labels, axis text, legend items — the floor */
+  --fs-chip: 11px; /* chips, tags and unit suffixes, and nothing else */
+  --fs-figure: 16px; /* a figure printed inside a row */
+  --fs-stat: 23px; /* stat-tile numerals */
+  --fs-stat-lg: 30px; /* the one emphasised figure on a face */
+
   --gutter: clamp(16px, 3.4vw, 44px);
   --gap: 16px;
 
@@ -137,7 +158,7 @@ body {
   background-color: var(--bg);
   color: var(--text);
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -185,7 +206,7 @@ a:hover {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-mute);
@@ -220,7 +241,7 @@ a:hover {
 }
 
 .panel__aside {
-  font-size: 11px;
+  font-size: var(--fs-meta);
   color: var(--text-mute);
   letter-spacing: 0.01em;
   white-space: nowrap;
@@ -291,7 +312,7 @@ a:hover {
   border-radius: var(--r-pill);
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: var(--fs-chip);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   line-height: 16px;
@@ -331,7 +352,7 @@ a:hover {
   padding: 2px 8px;
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  font-size: 9.5px;
+  font-size: var(--fs-chip);
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -368,7 +389,7 @@ a:hover {
   gap: 8px;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 14px;
+  font-size: 15px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text);
@@ -408,6 +429,52 @@ a:hover {
   display: none;
 }
 
+/* ── Tabs ─────────────────────────────────────────────────────────────── */
+
+/* One call, or every call. A segmented control rather than two links: the two
+   are the same kind of thing seen at two scales, and a bare pair of links in a
+   topbar reads as navigation away from the page rather than a view of it. */
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--panel);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 14px;
+  border-radius: var(--r-pill);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+/* The current view, lit the way a selected instrument is — and green, because
+   this is the page working, not a warning about it. */
+.tab--current,
+.tab--current:hover {
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
 /* ── Status lamp ──────────────────────────────────────────────────────── */
 
 .lamp {
@@ -420,7 +487,7 @@ a:hover {
   background: var(--panel);
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -507,7 +574,7 @@ a:hover {
   color: var(--text);
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: var(--fs-sub);
   letter-spacing: 0.02em;
   cursor: pointer;
   white-space: nowrap;
@@ -537,7 +604,7 @@ a:hover {
    the waterfall is the only object here allowed to be loud. */
 .btn--primary {
   padding: 13px 24px;
-  font-size: 14px;
+  font-size: var(--fs-body);
   border-color: transparent;
   background: var(--accent);
   color: #05130d;
@@ -596,7 +663,7 @@ a:hover {
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
   background: var(--panel);
-  font-size: 11px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -638,7 +705,7 @@ a:hover {
 .hero__lede {
   max-width: 56ch;
   margin: 0 0 30px;
-  font-size: 15.5px;
+  font-size: 17px;
   line-height: 1.66;
   color: var(--text-dim);
 }
@@ -657,13 +724,13 @@ a:hover {
 
 .hero__actions .btn:not(.btn--primary) {
   padding: 13px 22px;
-  font-size: 14px;
+  font-size: var(--fs-body);
 }
 
 .hero__note {
   margin: 22px 0 0;
   max-width: 52ch;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   color: var(--text-mute);
 }
@@ -696,7 +763,7 @@ a:hover {
    admits to being tappable on hover. */
 .placard__value {
   display: block;
-  font-size: clamp(22px, 2.3vw, 28px);
+  font-size: clamp(25px, 2.6vw, 32px);
   font-weight: 500;
   letter-spacing: -0.02em;
   line-height: 1.15;
@@ -711,7 +778,7 @@ a.placard__value:hover {
 
 .placard__foot {
   margin-top: 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-mute);
 }
@@ -732,7 +799,7 @@ a.placard__value:hover {
   justify-content: space-between;
   gap: 10px;
   margin-top: 8px;
-  font-size: 10px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -752,7 +819,7 @@ a.placard__value:hover {
   align-items: baseline;
   gap: 12px;
   padding: 7px 0;
-  font-size: 12px;
+  font-size: var(--fs-sub);
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -767,10 +834,10 @@ a.placard__value:hover {
 
 .spec-list dt {
   flex: none;
-  width: 74px;
+  width: 78px;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 10px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-mute);
@@ -781,7 +848,7 @@ a.placard__value:hover {
   flex: 1;
   min-width: 0;
   text-align: right;
-  font-size: 12px;
+  font-size: var(--fs-sub);
   color: var(--text);
   word-break: break-word;
 }
@@ -844,7 +911,7 @@ a.placard__value:hover {
 
 .wf-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 78px;
+  grid-template-columns: 104px minmax(0, 1fr) 92px;
   align-items: center;
   gap: 12px;
   padding: 4px 8px;
@@ -927,16 +994,16 @@ a.placard__value:hover {
    and every value is a figure rather than a sentence. */
 .detail .spec-list div {
   padding: 5px 0;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
 }
 
 .detail .spec-list dt {
-  width: 62px;
-  font-size: 9.5px;
+  width: 92px;
+  font-size: var(--fs-label);
 }
 
 .detail .spec-list dd {
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
 }
 
 .detail__flags {
@@ -965,7 +1032,7 @@ a.placard__value:hover {
 }
 
 .chain__ord {
-  font-size: 10px;
+  font-size: var(--fs-label);
   color: var(--text-mute);
 }
 
@@ -991,14 +1058,14 @@ a.placard__value:hover {
 }
 
 .chain__figure {
-  font-size: 10.5px;
+  font-size: var(--fs-label);
   color: var(--text-dim);
   white-space: nowrap;
 }
 
 .chain__figure small {
   font-family: var(--font-display);
-  font-size: 9px;
+  font-size: var(--fs-chip);
   color: var(--text-mute);
   margin-left: 3px;
 }
@@ -1035,17 +1102,22 @@ a.placard__value:hover {
   );
 }
 
+/* The gutter is a fixed width because every row is its own grid and they must
+   all agree with the measured axis row — so a turn that earns three badges
+   clips the third rather than shoving the chart out of alignment with the axis
+   underneath it. */
 .wf-row__id {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .wf-row__ord {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 11.5px;
+  font-size: 13px;
   letter-spacing: 0.02em;
   color: var(--text-dim);
 }
@@ -1056,7 +1128,7 @@ a.placard__value:hover {
 
 .wf-row__total {
   text-align: right;
-  font-size: 13.5px;
+  font-size: var(--fs-figure);
   font-weight: 500;
   letter-spacing: -0.02em;
   color: var(--text);
@@ -1072,14 +1144,14 @@ a.placard__value:hover {
 
 .wf-row__total small {
   font-family: var(--font-display);
-  font-size: 9.5px;
+  font-size: var(--fs-chip);
   font-weight: 500;
   color: var(--text-mute);
   margin-left: 3px;
 }
 
 .wf-row__pending {
-  font-size: 12px;
+  font-size: var(--fs-label);
   color: var(--text-mute);
   letter-spacing: 0.1em;
 }
@@ -1089,7 +1161,7 @@ a.placard__value:hover {
 .wf-row__partial {
   display: block;
   font-family: var(--font-display);
-  font-size: 9px;
+  font-size: var(--fs-label);
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: 0.08em;
@@ -1154,14 +1226,14 @@ a.placard__value:hover {
 
 .wf-axis text {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-label);
   fill: var(--text-dim);
 }
 
 .wf-budget-note {
   fill: var(--text-dim);
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: var(--fs-label);
   font-weight: 600;
   letter-spacing: 0.04em;
 }
@@ -1181,7 +1253,7 @@ a.placard__value:hover {
 .wf-key__note {
   margin: 12px 0 0;
   max-width: 78ch;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   color: var(--text-mute);
 }
@@ -1190,7 +1262,7 @@ a.placard__value:hover {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: var(--fs-label);
   color: var(--text-dim);
 }
 
@@ -1225,7 +1297,7 @@ a.placard__value:hover {
   padding: 34px 0 30px;
   text-align: center;
   color: var(--text-mute);
-  font-size: 12.5px;
+  font-size: var(--fs-sub);
   letter-spacing: 0.02em;
 }
 
@@ -1274,7 +1346,7 @@ a.placard__value:hover {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 11px;
+  font-size: var(--fs-label);
   color: var(--text-dim);
 }
 
@@ -1325,7 +1397,7 @@ a.placard__value:hover {
 
 .line {
   display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
   gap: 14px;
   align-items: baseline;
   animation: rise 0.26s ease both;
@@ -1338,7 +1410,7 @@ a.placard__value:hover {
   gap: 6px;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   padding-top: 2px;
@@ -1367,7 +1439,7 @@ a.placard__value:hover {
 
 .line__text {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-body);
   line-height: 1.6;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -1435,7 +1507,7 @@ a.placard__value:hover {
 .ledger__label {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 9.5px;
+  font-size: var(--fs-label);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-mute);
@@ -1443,7 +1515,7 @@ a.placard__value:hover {
 
 .ledger__value {
   margin-top: 6px;
-  font-size: 19px;
+  font-size: var(--fs-stat);
   font-weight: 500;
   letter-spacing: -0.03em;
   line-height: 1.2;
@@ -1452,7 +1524,7 @@ a.placard__value:hover {
 
 .ledger__value small {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: var(--fs-chip);
   font-weight: 600;
   letter-spacing: 0.08em;
   color: var(--text-mute);
@@ -1461,29 +1533,55 @@ a.placard__value:hover {
 
 .ledger__cell--cost .ledger__value {
   color: var(--accent);
-  font-size: 25px;
+  font-size: var(--fs-stat-lg);
 }
 
 /* The derived rate, subordinate to the total it comes from. */
 .ledger__sub {
   margin-top: 5px;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
 }
 
 .ledger__sub span {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: var(--fs-chip);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-mute);
   margin-left: 4px;
 }
 
-/* Three tiles in a 316px rail: the figure has to give up a little size so the
-   unit still fits beside it. */
+/* Three tiles in a 316px rail: the figure gives up a step so the unit still
+   fits beside it.
+
+   The wrap is the safety net rather than the intent. These carry bitrates and
+   buffer delays, whose plausible range spans two orders of magnitude, and there
+   is no width at which "1,284.6" and "kb/s" both fit a 74 px tile — so an
+   outlier drops its unit onto a second line instead of having it clipped off by
+   the ledger's own rounded-corner overflow, which is how a rate silently
+   becomes a bare number. */
 .ledger__value--tight {
-  font-size: 16px;
+  font-size: 17px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 4px;
+}
+
+.ledger__value--tight small {
+  margin-left: 0;
+}
+
+/* At 12 px some of these labels wrap in a 316 px rail and some do not — ROUND
+   TRIP and TTS CHARACTERS do, JITTER and STT AUDIO do not — and a row whose
+   figures sit at two different heights reads as two rows. Reserving two lines
+   for every label in a multi-column ledger puts all of them on one baseline.
+   Full-width cells are excluded: they have room for their label and nothing
+   beside them to line up with. */
+.ledger__cell:not(.ledger__cell--wide) .ledger__label {
+  display: block;
+  min-height: 3.1em;
 }
 
 /* ── Sparklines ───────────────────────────────────────────────────────── */
@@ -1517,16 +1615,148 @@ a.placard__value:hover {
 
 .ledger__caveat {
   margin: 11px 0 0;
-  font-size: 10.5px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-mute);
 }
 
+/* ── Level meters ─────────────────────────────────────────────────────── */
+
+.meters {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 9px;
+}
+
+.meter__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* An empty track is a reading of nothing, not a reading of zero — a sample
+   that carried no level draws no fill at all, and the track still stands. */
+.meter__track {
+  display: block;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  /* Fast enough to read as live, slow enough not to strobe at 0.5 Hz. */
+  transition: width 0.28s linear;
+}
+
+/* The page's own encoding: green is audio leaving the agent, blue is the
+   caller. Neither is a new hue and neither may be amber. */
+.meter__fill--in {
+  background: var(--accent);
+}
+
+.meter__fill--out {
+  background: var(--caller);
+}
+
+.meter__value {
+  font-size: var(--fs-label);
+  text-align: right;
+  color: var(--text-dim);
+}
+
+/* ── Emphasised cell ──────────────────────────────────────────────────── */
+
+/* One reading per face may lead. Here it is concealment, because it is the only
+   figure on the panel a caller can hear. */
+.ledger__cell--lead {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent);
+}
+
+.ledger__cell--lead .ledger__value {
+  font-size: var(--fs-stat-lg);
+}
+
+.ledger__gloss {
+  margin: 3px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+/* Amber and red on a reading rather than on chaos, earned the same way the
+   quality lamp earns them: this is a fault readout. Nothing else on an
+   instrument face may take them. */
+.ledger__value--warn {
+  color: var(--amber);
+}
+
+.ledger__value--alarm {
+  color: var(--alarm);
+}
+
 /* ── Chaos control ────────────────────────────────────────────────────── */
 
+/* Four injections, stacked. Each is an independent switch bank, so they get
+   air between them rather than being run together into one control surface a
+   visitor would read as a single setting. */
+.chaos-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.inject {
+  display: grid;
+  gap: 6px;
+}
+
+.inject__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inject__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* The agent's own value for this injection — never the button that was
+   pressed. Amber when armed: this is chaos, which is what amber is for. */
+.inject__state {
+  font-size: var(--fs-label);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+.inject__state--armed {
+  color: var(--amber);
+}
+
+/* Auto columns rather than a fixed four: the banks have two, three and four
+   positions, and a fixed template would leave the toggle with two empty cells
+   and a seam down the middle of it. */
 .chaos {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 1px;
   background: var(--line-soft);
   border: 1px solid var(--line);
@@ -1541,7 +1771,7 @@ a.placard__value:hover {
   background: var(--panel);
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sub);
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -1574,7 +1804,7 @@ a.placard__value:hover {
 
 .chaos__note {
   margin: 11px 0 0;
-  font-size: 10.5px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   color: var(--text-mute);
 }
@@ -1605,7 +1835,7 @@ a.placard__value:hover {
   flex: 1;
   min-width: 200px;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-sub);
   color: var(--text-dim);
 }
 
@@ -1630,7 +1860,7 @@ a.placard__value:hover {
 
 .debrief-bar__text p {
   margin: 6px 0 0;
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
 }
 
@@ -1645,7 +1875,7 @@ a.placard__value:hover {
   border-radius: var(--r-md);
   background: rgba(8, 11, 17, 0.45);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--fs-meta);
   overflow-wrap: anywhere;
 }
 
@@ -1664,7 +1894,7 @@ a.placard__value:hover {
   border-radius: var(--r-md);
   background: var(--panel-2);
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: var(--fs-sub);
 }
 
 .notice__action {
@@ -1675,7 +1905,7 @@ a.placard__value:hover {
   padding: 56px 0;
   text-align: center;
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: var(--fs-sub);
   letter-spacing: 0.02em;
 }
 
@@ -1689,12 +1919,256 @@ a.placard__value:hover {
   margin-top: 44px;
   padding-top: 18px;
   border-top: 1px solid var(--line);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--text-mute);
 }
 
 .footer__sep {
   color: var(--line-strong);
+}
+
+/* ── Fleet dashboard ──────────────────────────────────────────────────── */
+
+/* The other half of the recorder: one call becomes every call. It borrows the
+   cockpit's panels, ledger and stage ramp wholesale — a visitor who has read a
+   waterfall should not have to learn a second vocabulary to read a thousand of
+   them — and spends its own budget on air rather than on new ornament. */
+.fleet {
+  display: grid;
+  gap: 20px;
+  animation: rise 0.4s ease both;
+}
+
+.fleet__lead {
+  padding: clamp(8px, 2vh, 22px) 0 4px;
+}
+
+.fleet__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(34px, 4.4vw, 52px);
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+}
+
+.fleet__lede {
+  max-width: 62ch;
+  margin: 14px 0 0;
+  font-size: 17px;
+  line-height: 1.62;
+  color: var(--text-dim);
+}
+
+/* One instrument face, six readings — hairline-separated like the ledger
+   rather than six floating cards, so the row reads as a single panel. */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.stat {
+  padding: 18px 18px 20px;
+  background: var(--panel);
+  min-width: 0;
+}
+
+.stat__value {
+  margin-top: 9px;
+  font-size: var(--fs-stat-lg);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.14;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.stat__value small {
+  font-family: var(--font-display);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-mute);
+  margin-left: 5px;
+}
+
+/* Cost is the tile a stakeholder looks for first, and green is what the page
+   already spends on a system that is working. */
+.stat--lead {
+  background: linear-gradient(180deg, rgba(61, 220, 151, 0.07), rgba(61, 220, 151, 0.02));
+}
+
+.stat--lead .stat__value {
+  color: var(--accent);
+}
+
+.stat__sub {
+  margin: 7px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-mute);
+}
+
+.fleet__pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.6fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+/* Calls per day. Green, because a call happening is the system working — the
+   live-call strip already says so in the same hue. */
+.daychart__svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.daychart__bar {
+  fill: var(--accent);
+}
+
+.daychart__base {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.daychart .mini__foot {
+  margin-top: 10px;
+}
+
+/* Stage averages, in the waterfall's own ramp and its own order. */
+.stagebars {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 11px;
+}
+
+.stagebar {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 12px;
+}
+
+.stagebar__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stagebar__track {
+  display: block;
+  min-width: 0;
+}
+
+.stagebar__svg {
+  display: block;
+  width: 100%;
+}
+
+.stagebar__value {
+  text-align: right;
+  font-size: var(--fs-figure);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.stagebar__value small {
+  font-family: var(--font-display);
+  font-size: var(--fs-chip);
+  font-weight: 500;
+  color: var(--text-mute);
+  margin-left: 3px;
+}
+
+/* ── Degradation gauges ───────────────────────────────────────────────── */
+
+.gauges {
+  display: grid;
+  gap: 22px;
+}
+
+.gauge__value {
+  margin-top: 7px;
+  font-size: var(--fs-stat);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--text);
+}
+
+.gauge__value small {
+  font-family: var(--font-display);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-mute);
+  margin-left: 4px;
+}
+
+/* Amber and red, and this is the page where they are least borrowed: both
+   figures are literally rates of degradation. A zero stays neutral — nothing
+   went wrong, so nothing lights up. */
+.gauge__value--warn {
+  color: var(--amber);
+}
+
+.gauge__value--alarm {
+  color: var(--alarm);
+}
+
+.gauge__track {
+  height: 8px;
+  margin-top: 11px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.gauge__fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gauge__fill--warn {
+  background: var(--amber);
+}
+
+.gauge__fill--alarm {
+  background: var(--alarm);
+}
+
+.gauge__caption {
+  margin: 9px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+
+/* Says how complete the reading is, and where the same numbers live. A
+   dashboard that cannot be checked against anything is a dashboard nobody has
+   to be right about. */
+.fleet__foot {
+  margin: 2px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  color: var(--text-mute);
 }
 
 /* ── Responsive ───────────────────────────────────────────────────────── */
@@ -1709,6 +2183,14 @@ a.placard__value:hover {
   .hero__aside {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  /* Six 30 px figures do not fit across a tablet; two rows of three keeps the
+     tile proportions rather than shrinking the numerals. */
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .fleet__pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 720px) {
@@ -1721,7 +2203,7 @@ a.placard__value:hover {
    then open this page, so this is where most visitors meet the instruments. */
 @media (max-width: 640px) {
   body {
-    font-size: 13.5px;
+    font-size: 15px;
   }
   .topbar {
     flex-wrap: wrap;
@@ -1776,7 +2258,7 @@ a.placard__value:hover {
      rather than mute. */
   .wf-axis text,
   .wf-budget-note {
-    font-size: 12px;
+    font-size: 13px;
   }
   .wf-key__row {
     gap: 8px 14px;
@@ -1784,10 +2266,10 @@ a.placard__value:hover {
   .wf-key__item,
   .wf-key__note,
   .strip-legend__item {
-    font-size: 12px;
+    font-size: 13px;
   }
   .mini__foot {
-    font-size: 11px;
+    font-size: var(--fs-label);
   }
 
   /* A narrow head would otherwise ellipsis away half the readout. Give the
@@ -1801,7 +2283,7 @@ a.placard__value:hover {
     white-space: normal;
     overflow: visible;
     text-overflow: clip;
-    font-size: 12px;
+    font-size: 13.5px;
     color: var(--text-dim);
   }
   .panel--fold > .panel__head .panel__aside {
@@ -1852,8 +2334,42 @@ a.placard__value:hover {
   .ledger--three {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .chaos {
+  /* No column override for `.chaos` on a phone: the banks size themselves from
+     `grid-auto-columns`, and a fixed template here would spill a four-position
+     bank into implicit columns off the right edge. Full width, four positions
+     fit comfortably.
+
+     The tabs take a row of their own rather than competing with the mark, the
+     lamp and the call controls for a 390 px bar. `order` puts them last, and
+     `flex: 1 0 100%` is what makes that row full-width. */
+  .tabs {
+    order: 9;
+    flex: 1 0 100%;
+    justify-content: stretch;
+  }
+  .tab {
+    flex: 1;
+    justify-content: center;
+    padding: 7px 10px;
+  }
+
+  .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .stat {
+    padding: 15px 15px 17px;
+  }
+  /* A 30 px figure in a half-width tile clips a four-decimal cost; the tile
+     keeps its hierarchy at one step down. */
+  .stat__value {
+    font-size: var(--fs-stat);
+  }
+  .stagebar {
+    grid-template-columns: 84px minmax(0, 1fr) 68px;
+    gap: 10px;
+  }
+  .fleet__lede {
+    font-size: var(--fs-body);
   }
 
   /* Three columns of figures do not survive a 360px screen; stacked, each
@@ -1867,13 +2383,13 @@ a.placard__value:hover {
   }
   .detail .spec-list div,
   .detail .spec-list dd {
-    font-size: 12px;
+    font-size: 13px;
   }
   .chain__figure {
-    font-size: 11px;
+    font-size: var(--fs-label);
   }
   .spec-list dt {
-    width: 62px;
+    width: 92px;
   }
   /* Stacked, so a wrapped line can never open with a dangling slash. */
   .footer {

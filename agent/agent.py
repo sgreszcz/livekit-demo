@@ -36,7 +36,13 @@ from livekit.agents import (
 from livekit.agents.metrics import EOUMetrics, LLMMetrics, STTMetrics, TTSMetrics
 from livekit.agents.voice.speech_handle import SpeechHandle
 
-from chaos import ChaosController, DelayedLLM, parse_control_message
+from chaos import (
+    DEFAULT_SLOW_LLM_MODEL,
+    ChaosController,
+    DelayedLLM,
+    DelayedTTS,
+    parse_control_message,
+)
 from telemetry import (
     CONTROL_TOPIC,
     PipelineModels,
@@ -54,6 +60,9 @@ logger = logging.getLogger("glass-cockpit")
 STT_MODEL = os.getenv("COCKPIT_STT_MODEL", "deepgram/nova-3")
 LLM_MODEL = os.getenv("COCKPIT_LLM_MODEL", "openai/gpt-4.1-mini")
 TTS_MODEL = os.getenv("COCKPIT_TTS_MODEL", "cartesia/sonic-3")
+# Chaos mode's "slow model" swap. Read here rather than in chaos.py because module-level
+# env reads in an imported module would run before load_dotenv() below.
+SLOW_LLM_MODEL = os.getenv("COCKPIT_SLOW_LLM_MODEL", DEFAULT_SLOW_LLM_MODEL)
 
 INSTRUCTIONS = """\
 You are the guide for "Glass Cockpit", a live demonstration of a LiveKit voice agent \
@@ -79,9 +88,13 @@ What you can explain, when asked:
 Time to first token is the language model starting to respond. Time to first byte is \
 speech synthesis starting to return audio. Their sum is roughly what the caller \
 experiences as "how long before it answered me".
-- Chaos mode: the visitor can inject artificial latency in front of the language model \
-from the dashboard, or ask you to describe it, and watch the waterfall degrade the way \
-a slow region or an overloaded provider would look in production.
+- Chaos mode: from the dashboard the visitor can degrade this very call and watch the \
+waterfall react the way a slow region or an overloaded provider would look in \
+production. Four injections: artificial latency in front of the language model, \
+artificial latency in front of speech synthesis, swapping you onto a deliberately \
+heavier model, and clamping how many tokens you are allowed to answer with — that last \
+one will cut you off mid-sentence, which is the point, so do not apologise for it or \
+work around it.
 - Your own numbers: call the get_call_metrics tool and read the result back \
 conversationally. Never invent latency or cost figures — always use the tool.
 
@@ -186,6 +199,9 @@ def _wire_telemetry(
                     duration=m.duration,
                     audio_duration=m.audio_duration,
                     characters_count=m.characters_count,
+                    # Identifies the synthesis, and with it the chaos delay actually
+                    # injected in front of this segment.
+                    request_id=m.request_id,
                 )
             )
         elif isinstance(m, STTMetrics):
@@ -289,7 +305,11 @@ server = AgentServer()
 async def entrypoint(ctx: JobContext) -> None:
     chaos = ChaosController()
     models = PipelineModels(stt=STT_MODEL, llm=LLM_MODEL, tts=TTS_MODEL)
-    store = TurnStore(models=models, applied_delay=chaos.applied.take)
+    store = TurnStore(
+        models=models,
+        applied_llm_chaos=chaos.llm_applied.take,
+        applied_tts_chaos=chaos.tts_applied.take,
+    )
     publisher = TelemetryPublisher(ctx.room)
     started_at = time.time()
 
@@ -300,12 +320,16 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_data(packet: rtc.DataPacket) -> None:
         if packet.topic != CONTROL_TOPIC:
             return
-        delay_ms = parse_control_message(packet.data)
-        if delay_ms is None:
+        command = parse_control_message(packet.data)
+        if command is None:
             return
-        chaos.set_delay_ms(delay_ms)
-        logger.info("chaos delay set to %d ms", chaos.delay_ms)
-        publisher.emit(envelope("chaos", chaos.envelope_payload(), ts=time.time()))
+        chaos.apply(command)
+        # The ack carries the whole state, not the delta: a cockpit that joined
+        # mid-call, or one whose own request was partly rejected as malformed, has no
+        # other way to learn what the agent is actually doing.
+        payload = chaos.envelope_payload()
+        logger.info("chaos state: %s", payload)
+        publisher.emit(envelope("chaos", payload, ts=time.time()))
 
     @ctx.room.on("participant_connected")
     def _on_participant_connected(participant: rtc.RemoteParticipant) -> None:
@@ -336,8 +360,16 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         stt=models.stt,
-        llm=DelayedLLM(inference.LLM(model=models.llm), chaos),
-        tts=models.tts,
+        # Both chaos wrappers are constructed with real Inference plugins rather than
+        # letting AgentSession resolve the model strings: a wrapper has to own the
+        # stream the SDK measures, and it cannot wrap a plugin it never sees. The slow
+        # model is built up front and kept warm so the swap costs nothing mid-call.
+        llm=DelayedLLM(
+            inference.LLM(model=models.llm),
+            chaos,
+            slow=inference.LLM(model=SLOW_LLM_MODEL),
+        ),
+        tts=DelayedTTS(inference.TTS(model=models.tts), chaos),
         turn_detection=inference.TurnDetector(),
     )
     _wire_telemetry(session, store, publisher)

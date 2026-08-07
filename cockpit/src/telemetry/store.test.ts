@@ -14,6 +14,8 @@ import {
   createCockpitState,
   currentAgentState,
   emptyLog,
+  CHAOS_OFF,
+  activeInjectionCount,
   interruptionTotals,
   latencyAggregates,
   latestTransport,
@@ -208,7 +210,16 @@ describe('chaos and degradation', () => {
   });
 
   it('ends with chaos switched back off', () => {
-    expect(state.chaos).toEqual({ llmDelayMs: 0, active: false });
+    // The fixture predates v1.3 and its acks carry only `llm_delay_ms`. The
+    // three injections it never heard of must read as off, not as unknown —
+    // this is the assertion that keeps a two-year-old debrief renderable.
+    expect(state.chaos).toEqual({
+      llmDelayMs: 0,
+      ttsDelayMs: 0,
+      slowModel: false,
+      maxCompletionTokens: null,
+      active: false,
+    });
   });
 });
 
@@ -522,5 +533,160 @@ describe('replay determinism', () => {
 
   it('accepts every envelope in the shipped fixture as contract-valid', () => {
     for (const envelope of envelopes) expect(isEnvelope(envelope)).toBe(true);
+  });
+});
+
+/**
+ * The chaos reducer under v1.3.
+ *
+ * Two rules, and they pull in opposite directions. An ack is a FULL state, so
+ * it replaces rather than merges — otherwise a cleared injection stays lit
+ * forever. But a v1.1 ack that never mentions three of the four injections must
+ * read those as off rather than as unknown, because that is what a v1.1 agent
+ * was: an agent that could not inject them.
+ */
+describe('chaos acks', () => {
+  const chaos = (payload: Record<string, unknown>): Envelope =>
+    ({ v: 1, type: 'chaos', ts: 10, payload }) as unknown as Envelope;
+
+  const apply = (...payloads: Record<string, unknown>[]) =>
+    reduceAll(payloads.map(chaos), createCockpitState()).chaos;
+
+  it('starts with every injection off', () => {
+    // Spelled out rather than compared to CHAOS_OFF, which is the constant the
+    // initial state is built from: that comparison is true by construction and
+    // would pass however wrong the constant itself was.
+    expect(createCockpitState().chaos).toEqual({
+      llmDelayMs: 0,
+      ttsDelayMs: 0,
+      slowModel: false,
+      maxCompletionTokens: null,
+      active: false,
+    });
+    expect(activeInjectionCount(createCockpitState().chaos)).toBe(0);
+  });
+
+  it('records all four injections from a full ack', () => {
+    expect(
+      apply({
+        llm_delay_ms: 800,
+        tts_delay_ms: 300,
+        slow_model: true,
+        max_completion_tokens: 30,
+        active: true,
+      }),
+    ).toEqual({
+      llmDelayMs: 800,
+      ttsDelayMs: 300,
+      slowModel: true,
+      maxCompletionTokens: 30,
+      active: true,
+    });
+  });
+
+  it('reads a v1.1 ack as three injections switched off', () => {
+    expect(apply({ llm_delay_ms: 800, active: true })).toEqual({
+      llmDelayMs: 800,
+      ttsDelayMs: 0,
+      slowModel: false,
+      maxCompletionTokens: null,
+      active: true,
+    });
+  });
+
+  it('replaces the whole state rather than merging, so clearing actually clears', () => {
+    // The bug this exists to prevent: arm everything, then have the agent
+    // report nominal, and watch a stale +800 ms stay on screen forever.
+    const chaosState = apply(
+      { llm_delay_ms: 1500, tts_delay_ms: 600, slow_model: true, max_completion_tokens: 30, active: true },
+      { llm_delay_ms: 0, active: false },
+    );
+    expect(chaosState).toEqual(CHAOS_OFF);
+  });
+
+  it('treats an explicit null ceiling as off', () => {
+    expect(apply({ llm_delay_ms: 0, max_completion_tokens: null, active: false })).toEqual(CHAOS_OFF);
+  });
+});
+
+describe('activeInjectionCount', () => {
+  it('counts nothing when nothing is armed', () => {
+    expect(activeInjectionCount(CHAOS_OFF)).toBe(0);
+  });
+
+  it('counts each injection once, whatever its type', () => {
+    expect(
+      activeInjectionCount({
+        llmDelayMs: 800,
+        ttsDelayMs: 300,
+        slowModel: true,
+        maxCompletionTokens: 30,
+        active: true,
+      }),
+    ).toBe(4);
+  });
+
+  it('does not count a zero delay or a zero-ish ceiling as armed', () => {
+    expect(
+      activeInjectionCount({ ...CHAOS_OFF, llmDelayMs: 0, ttsDelayMs: 0, active: true }),
+    ).toBe(0);
+    // A ceiling of zero tokens is a real, and extremely aggressive, setting.
+    expect(activeInjectionCount({ ...CHAOS_OFF, maxCompletionTokens: 0 })).toBe(1);
+  });
+
+  it('counts from the ack, not from the flag the agent set beside it', () => {
+    // `active` is the agent's own summary; the count is derived from the
+    // settings themselves so the two can be compared rather than assumed equal.
+    expect(activeInjectionCount({ ...CHAOS_OFF, slowModel: true, active: false })).toBe(1);
+  });
+});
+
+describe('transport samples — v1.3 fields', () => {
+  const transport = (payload: TransportPayload): Envelope =>
+    ({ v: 1, type: 'transport', ts: 5, payload }) as Envelope;
+
+  it('keeps every enriched figure it was given', () => {
+    const sample = latestTransport(
+      reduceAll(
+        [
+          transport({
+            quality: 'good',
+            rtt_ms: 48,
+            audio_level_in: 0.31,
+            audio_level_out: 0.02,
+            bitrate_in_kbps: 24.1,
+            bitrate_out_kbps: 31.7,
+            jitter_buffer_ms: 61,
+            concealed_pct: 0.4,
+          }),
+        ],
+        createCockpitState(),
+      ),
+    );
+
+    expect(sample).toEqual({
+      ts: 5,
+      quality: 'good',
+      rttMs: 48,
+      levelIn: 0.31,
+      levelOut: 0.02,
+      bitrateInKbps: 24.1,
+      bitrateOutKbps: 31.7,
+      jitterBufferMs: 61,
+      concealedPct: 0.4,
+    });
+  });
+
+  it('leaves an unreported figure absent rather than zero', () => {
+    // The whole reason the store models these as optional: a sample that could
+    // not read the concealment did not measure 0%, and a tile that cannot tell
+    // those apart prints a clean bill of health it has no evidence for.
+    const sample = latestTransport(
+      reduceAll([transport({ quality: 'good', audio_level_in: 0 })], createCockpitState()),
+    );
+    expect(sample).toEqual({ ts: 5, quality: 'good', levelIn: 0 });
+    expect(sample && 'concealedPct' in sample).toBe(false);
+    // And a real zero level survives as a zero — a muted microphone reads 0.
+    expect(sample?.levelIn).toBe(0);
   });
 });

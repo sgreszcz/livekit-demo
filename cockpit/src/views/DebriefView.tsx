@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { CockpitBoard } from '../components/CockpitBoard';
 import { Footer } from '../components/Footer';
 import { Mark } from '../components/Mark';
+import { Tabs } from '../components/Tabs';
 import { navigate } from '../router';
 import { isEnvelope, type DebriefRecord } from '../telemetry/schema';
 import { reduceAll, type CockpitState } from '../telemetry/store';
@@ -59,6 +60,8 @@ export function DebriefView({ id }: { id: string }) {
           <Mark />
           Glass <span>Cockpit</span>
         </div>
+        {/* A debrief is the cockpit over a recording, so it lights that tab. */}
+        <Tabs route="debrief" />
         <span className="lamp lamp--idle">Recorded call</span>
         <div className="topbar__spacer" />
         <div className="topbar__actions">

@@ -55,9 +55,41 @@ export interface StateSample {
   ts: number;
 }
 
+/**
+ * What the agent says is armed right now (v1.3).
+ *
+ * Built only from `chaos` acks, never from what this browser asked for: the
+ * whole point of an ack is that it is the agent's account of itself. Fields a
+ * v1.1 agent never sent read as off, so a recording made before token
+ * starvation existed renders as a call with token starvation switched off —
+ * which is exactly what it was.
+ */
 export interface ChaosState {
   llmDelayMs: number;
+  ttsDelayMs: number;
+  slowModel: boolean;
+  /** Null means no ceiling, which is the off state. */
+  maxCompletionTokens: number | null;
   active: boolean;
+}
+
+/** The off position for all four injections. */
+export const CHAOS_OFF: ChaosState = {
+  llmDelayMs: 0,
+  ttsDelayMs: 0,
+  slowModel: false,
+  maxCompletionTokens: null,
+  active: false,
+};
+
+/** How many injections an ack reports armed — what the panel's readout counts. */
+export function activeInjectionCount(chaos: ChaosState): number {
+  return (
+    (chaos.llmDelayMs > 0 ? 1 : 0) +
+    (chaos.ttsDelayMs > 0 ? 1 : 0) +
+    (chaos.slowModel ? 1 : 0) +
+    (chaos.maxCompletionTokens !== null ? 1 : 0)
+  );
 }
 
 /**
@@ -71,6 +103,13 @@ export interface TransportSample {
   jitterMs?: number;
   lossPct?: number;
   quality: TransportQuality;
+  /* v1.3 — independently optional for the same reason as the three above. */
+  levelIn?: number;
+  levelOut?: number;
+  bitrateInKbps?: number;
+  bitrateOutKbps?: number;
+  jitterBufferMs?: number;
+  concealedPct?: number;
 }
 
 /**
@@ -161,7 +200,7 @@ export function createCockpitState(): CockpitState {
     transcript: [],
     states: [],
     usage: null,
-    chaos: { llmDelayMs: 0, active: false },
+    chaos: CHAOS_OFF,
     transport: [],
     log: emptyLog(),
     firstTs: null,
@@ -405,14 +444,38 @@ export function reduceEnvelope(state: CockpitState, envelope: Envelope): Cockpit
     case 'usage':
       return { ...base, usage: envelope.payload };
 
-    case 'chaos':
+    case 'chaos': {
+      // Replaced wholesale, not merged: the contract says an ack carries the
+      // FULL current state, so a field the agent left out is a field the agent
+      // is not injecting. Merging would strand a stale +800 ms on screen after
+      // the agent reported everything nominal.
+      const { llm_delay_ms, tts_delay_ms, slow_model, max_completion_tokens, active } =
+        envelope.payload;
       return {
         ...base,
-        chaos: { llmDelayMs: envelope.payload.llm_delay_ms, active: envelope.payload.active },
+        chaos: {
+          llmDelayMs: llm_delay_ms,
+          ttsDelayMs: tts_delay_ms ?? 0,
+          slowModel: slow_model ?? false,
+          maxCompletionTokens: max_completion_tokens ?? null,
+          active,
+        },
       };
+    }
 
     case 'transport': {
-      const { rtt_ms, jitter_ms, packet_loss_pct, quality } = envelope.payload;
+      const {
+        rtt_ms,
+        jitter_ms,
+        packet_loss_pct,
+        quality,
+        audio_level_in,
+        audio_level_out,
+        bitrate_in_kbps,
+        bitrate_out_kbps,
+        jitter_buffer_ms,
+        concealed_pct,
+      } = envelope.payload;
       // Absent figures stay absent rather than becoming zero: a sample that
       // could not read the round-trip time did not measure it at 0 ms, and a
       // sparkline that cannot tell those apart plots a cliff that never
@@ -423,6 +486,12 @@ export function reduceEnvelope(state: CockpitState, envelope: Envelope): Cockpit
         ...(rtt_ms !== undefined ? { rttMs: rtt_ms } : null),
         ...(jitter_ms !== undefined ? { jitterMs: jitter_ms } : null),
         ...(packet_loss_pct !== undefined ? { lossPct: packet_loss_pct } : null),
+        ...(audio_level_in !== undefined ? { levelIn: audio_level_in } : null),
+        ...(audio_level_out !== undefined ? { levelOut: audio_level_out } : null),
+        ...(bitrate_in_kbps !== undefined ? { bitrateInKbps: bitrate_in_kbps } : null),
+        ...(bitrate_out_kbps !== undefined ? { bitrateOutKbps: bitrate_out_kbps } : null),
+        ...(jitter_buffer_ms !== undefined ? { jitterBufferMs: jitter_buffer_ms } : null),
+        ...(concealed_pct !== undefined ? { concealedPct: concealed_pct } : null),
       };
 
       const transport = [...base.transport, sample];

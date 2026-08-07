@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { CockpitSession } from './livekit/session';
 import { replayFixture, type ReplayHandle } from './telemetry/fixtureSource';
-import type { DebriefRecord, Envelope } from './telemetry/schema';
+import { definedInjections } from './telemetry/schema';
+import type { ChaosInjections, DebriefRecord, Envelope } from './telemetry/schema';
 import {
   appendToLog,
   createCockpitState,
@@ -16,6 +17,19 @@ import {
   type CockpitState,
   type EnvelopeLog,
 } from './telemetry/store';
+
+/**
+ * What this browser has asked for, which is not the same thing as what the
+ * agent is doing — `state.chaos` is the agent's own account and the panel shows
+ * both. Held here so a control reads back the moment it is pressed rather than
+ * a round trip later.
+ */
+export const CHAOS_REQUEST_OFF: ChaosInjections = {
+  llm_delay_ms: 0,
+  tts_delay_ms: 0,
+  slow_model: false,
+  max_completion_tokens: null,
+};
 
 export type CockpitMode =
   | 'idle'
@@ -36,7 +50,8 @@ export interface Cockpit {
   state: CockpitState;
   mode: CockpitMode;
   error: string | null;
-  chaosDelayMs: number;
+  /** What this browser has requested; the agent's ack lives on `state.chaos`. */
+  chaosRequest: ChaosInjections;
   micEnabled: boolean;
   share: ShareResult | null;
   sharing: boolean;
@@ -46,7 +61,7 @@ export interface Cockpit {
   stopObserving: () => void;
   endCall: () => Promise<void>;
   reset: () => void;
-  setChaosDelay: (ms: number) => Promise<void>;
+  setChaos: (patch: Partial<ChaosInjections>) => Promise<void>;
   toggleMic: () => Promise<void>;
   shareCall: () => Promise<void>;
 }
@@ -61,7 +76,7 @@ export function useCockpit(): Cockpit {
   const [state, dispatch] = useReducer(storeReducer, undefined, createCockpitState);
   const [mode, setMode] = useState<CockpitMode>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [chaosDelayMs, setChaosDelayMs] = useState(0);
+  const [chaosRequest, setChaosRequest] = useState<ChaosInjections>(CHAOS_REQUEST_OFF);
   const [micEnabled, setMicEnabled] = useState(true);
   const [share, setShare] = useState<ShareResult | null>(null);
   const [sharing, setSharing] = useState(false);
@@ -126,7 +141,7 @@ export function useCockpit(): Cockpit {
   const reset = useCallback(() => {
     beginSource();
     setMode('idle');
-    setChaosDelayMs(0);
+    setChaosRequest(CHAOS_REQUEST_OFF);
     setMicEnabled(true);
   }, [beginSource]);
 
@@ -243,11 +258,19 @@ export function useCockpit(): Cockpit {
    * button that claims to have muted a microphone that does not exist, is an
    * instrument reading something that never happened.
    */
-  const setChaosDelay = useCallback(async (ms: number) => {
+  const setChaos = useCallback(async (patch: Partial<ChaosInjections>) => {
     const session = sessionRef.current;
     if (session?.observing) return;
-    setChaosDelayMs(ms);
-    await session?.setChaosDelay(ms).catch(() => {});
+    // Optimistic locally, patch on the wire: the control reads back immediately
+    // and the agent is told only what changed. The two are reconciled on screen
+    // by the ack, which is the only thing that claims an injection is live.
+    //
+    // Filtered through the same function the wire uses, so the switch cannot
+    // read back a change the published message did not carry — an `undefined`
+    // would otherwise overwrite local state and vanish from the JSON.
+    const defined = definedInjections(patch);
+    setChaosRequest((current) => ({ ...current, ...defined }));
+    await session?.setChaos(defined).catch(() => {});
   }, []);
 
   const toggleMic = useCallback(async () => {
@@ -293,7 +316,7 @@ export function useCockpit(): Cockpit {
     state,
     mode,
     error,
-    chaosDelayMs,
+    chaosRequest,
     micEnabled,
     share,
     sharing,
@@ -303,7 +326,7 @@ export function useCockpit(): Cockpit {
     stopObserving,
     endCall,
     reset,
-    setChaosDelay,
+    setChaos,
     toggleMic,
     shareCall,
   };

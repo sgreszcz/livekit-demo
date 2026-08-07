@@ -31,6 +31,7 @@ __all__ = [
     "OBSERVER_IDENTITY_PREFIX",
     "SCHEMA_VERSION",
     "TELEMETRY_TOPIC",
+    "AppliedChaos",
     "LLMInvocation",
     "PipelineModels",
     "TelemetryPublisher",
@@ -94,6 +95,36 @@ class PipelineModels:
 
 
 @dataclass(frozen=True)
+class AppliedChaos:
+    """What chaos actually did to one pipeline invocation.
+
+    The record a :class:`TurnStore` claims when a metric arrives, so a turn can be
+    attributed truthfully: the toggle can move mid-turn, and asking it "are you on?"
+    when the metric lands answers the wrong question.
+
+    It lives here rather than in ``chaos.py`` on purpose. It is pure data with no SDK
+    types, and the dependency arrow points from the SDK-bound injector *into* the
+    offline-testable store — the same direction as ``agent.py``. The store never
+    imports the injector.
+
+    ``model``, ``slow_model`` and ``max_completion_tokens`` are LLM-only and stay unset
+    for a TTS record, whose only injection is a delay.
+    """
+
+    delay: float = 0.0
+    """Latency actually injected in front of this invocation, in seconds."""
+    model: str | None = None
+    """The model this invocation actually ran against; ``None`` means "the default"."""
+    slow_model: bool = False
+    max_completion_tokens: int | None = None
+
+    @property
+    def degraded(self) -> bool:
+        """True if chaos touched this invocation at all — any injection counts."""
+        return self.delay > 0 or self.slow_model or self.max_completion_tokens is not None
+
+
+@dataclass(frozen=True)
 class LLMInvocation:
     """One completion request. A turn that calls a tool makes more than one."""
 
@@ -103,6 +134,8 @@ class LLMInvocation:
     completion_tokens: int
     applied_delay: float = 0.0
     """Chaos latency actually injected in front of *this* request, in seconds."""
+    model: str | None = None
+    """The model this invocation actually ran against — chaos can swap it per call."""
 
 
 @dataclass
@@ -117,6 +150,8 @@ class Turn:
     llm_chain: list[LLMInvocation] = field(default_factory=list)
     total_response_latency: float | None = None
     degraded: bool = False
+    published_degraded: bool = False
+    """The last ``degraded`` value put on the wire, so a late flip can be corrected."""
     barge_in: bool = False
     user_text: str = ""
     agent_text: str = ""
@@ -127,6 +162,11 @@ class Turn:
         if self.eou is None or self.llm is None or self.tts is None:
             return None
         return _r(self.eou["end_of_utterance_delay"] + self.llm["ttft"] + self.tts["ttfb"])
+
+
+def _no_chaos(_request_id: str | None) -> AppliedChaos:
+    """Default attribution for a store running without a chaos controller."""
+    return AppliedChaos()
 
 
 class TurnStore:
@@ -151,10 +191,12 @@ class TurnStore:
         self,
         *,
         models: PipelineModels,
-        applied_delay: Callable[[str | None], float] = lambda _request_id: 0.0,
+        applied_llm_chaos: Callable[[str | None], AppliedChaos] = _no_chaos,
+        applied_tts_chaos: Callable[[str | None], AppliedChaos] = _no_chaos,
     ) -> None:
         self._models = models
-        self._applied_delay = applied_delay
+        self._applied_llm_chaos = applied_llm_chaos
+        self._applied_tts_chaos = applied_tts_chaos
         self._turns: dict[str, Turn] = {}
         self._current_turn_id: str | None = None
         self._last_turn_id: str | None = None
@@ -164,6 +206,11 @@ class TurnStore:
         self._pending_stt: list[tuple[float, float]] = []
         self._prompt_tokens = 0
         self._completion_tokens = 0
+        # The same tokens again, split by the model that actually produced them. The
+        # wire's usage totals stay flat (the schema has one number for each), but the
+        # cost estimate cannot: chaos can move the call onto a model five times the
+        # price mid-conversation, and one blended rate would misprice both halves.
+        self._llm_usage: dict[str, list[int]] = {}
         self._stt_audio_seconds = 0.0
         self._tts_characters = 0
 
@@ -255,27 +302,36 @@ class TurnStore:
         """Ingest LLMMetrics, appending to the turn's chain of invocations.
 
         ``request_id`` identifies the completion this metric describes, and is how the
-        chaos delay *actually* injected in front of it is recovered — polling the
-        current toggle state here would mis-attribute any turn that straddles a toggle.
+        chaos *actually* applied in front of it is recovered — polling the current
+        toggle state here would mis-attribute any turn that straddles a toggle. The
+        record also carries the model this invocation really ran against, which chaos
+        can swap per call.
         """
-        self._prompt_tokens += prompt_tokens
-        self._completion_tokens += completion_tokens
-
         turn = self._touch(turn_id)
-        applied_delay = self._applied_delay(request_id)
+        applied = self._applied_llm_chaos(request_id)
+        self._add_llm_tokens(applied.model or self._models.llm, prompt_tokens, completion_tokens)
         turn.llm_chain.append(
             LLMInvocation(
                 ttft=ttft,
                 duration=duration,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                applied_delay=applied_delay,
+                applied_delay=applied.delay,
+                model=applied.model,
             )
         )
-        if applied_delay > 0:
+        if applied.degraded:
             turn.degraded = True
         turn.llm = self._llm_block(turn.llm_chain)
         return self._turn_envelope(turn, {"llm": turn.llm}, ts=ts if ts is not None else _ts())
+
+    def _add_llm_tokens(self, model: str, prompt_tokens: int, completion_tokens: int) -> None:
+        """Fold one invocation's tokens into both the flat totals and the per-model split."""
+        self._prompt_tokens += prompt_tokens
+        self._completion_tokens += completion_tokens
+        bucket = self._llm_usage.setdefault(model, [0, 0])
+        bucket[0] += prompt_tokens
+        bucket[1] += completion_tokens
 
     def _llm_block(self, chain: list[LLMInvocation]) -> dict[str, Any]:
         """Collapse a turn's invocations into the single ``llm`` block on the wire.
@@ -290,6 +346,11 @@ class TurnStore:
         for the single-call case, where it would only repeat ``ttft``/``duration``:
         every turn on a normal call pays for that field otherwise, and consumers of the
         v1 schema must treat it as optional regardless.
+
+        ``model`` reports the model the *last* invocation actually used. Chaos can swap
+        the model per invocation, so a chain is not guaranteed to be homogeneous; the
+        last one is the one whose tokens the caller is still hearing, and the per-call
+        ``chain`` entries stay ``{ttft, duration}`` as the schema specifies.
         """
         duration = sum(call.duration for call in chain)
         completion_tokens = sum(call.completion_tokens for call in chain)
@@ -300,7 +361,7 @@ class TurnStore:
             "completion_tokens": completion_tokens,
             "tokens_per_second": _r(completion_tokens / duration if duration else 0.0, 1),
             "llm_calls": len(chain),
-            "model": self._models.llm,
+            "model": chain[-1].model or self._models.llm,
         }
         if len(chain) > 1:
             block["chain"] = [
@@ -316,11 +377,24 @@ class TurnStore:
         duration: float,
         audio_duration: float,
         characters_count: int,
+        request_id: str | None = None,
         ts: float | None = None,
     ) -> dict[str, Any] | None:
-        """Ingest TTSMetrics. Fires once per synthesised segment."""
+        """Ingest TTSMetrics. Fires once per synthesised segment.
+
+        ``request_id`` recovers the chaos delay actually injected in front of *this*
+        synthesis, the same way ``record_llm`` does for a completion. The claim happens
+        for every segment, including ones whose ``tts`` block is dropped as a repeat —
+        skipping it would leave the log's FIFO fallback one entry out of step for the
+        rest of the call.
+        """
         self._tts_characters += characters_count
-        return self._merge(
+        ts = ts if ts is not None else _ts()
+        turn = self._touch(turn_id)
+        if self._applied_tts_chaos(request_id).degraded:
+            turn.degraded = True
+
+        env = self._merge(
             turn_id,
             "tts",
             {
@@ -329,8 +403,14 @@ class TurnStore:
                 "audio_duration": _r(audio_duration),
                 "model": self._models.tts,
             },
-            ts=ts if ts is not None else _ts(),
+            ts=ts,
         )
+        if env is None and turn.degraded != turn.published_degraded:
+            # A later segment was degraded but its block is a repeat, so nothing would
+            # have carried the correction. Publish the flag on its own — never a bare
+            # envelope, because the only reason to get here is that the flag moved.
+            env = self._turn_envelope(turn, {}, ts=ts)
+        return env
 
     def record_stt(self, *, duration: float, audio_duration: float) -> None:
         """Ingest STTMetrics, which the SDK emits without a speech id.
@@ -387,6 +467,14 @@ class TurnStore:
         A late LLM invocation lengthens the chain's effective ``ttft`` after the totals
         were first sent, so the corrected value is re-published and the frontend's
         last-write-wins merge picks it up.
+
+        ``degraded`` rides along with the totals, and is *also* published whenever it
+        changes without them — a second LLM invocation or a later TTS segment can be the
+        first thing chaos touched in a turn whose totals already shipped, and an
+        agent-initiated turn (the greeting) has no ``eou`` and so never gets totals at
+        all. Tying the flag to the totals would leave that turn painted clean however
+        badly chaos degraded it, which the schema forbids: a turn is degraded if any
+        injection was applied to any of its stages, partial waterfall or not.
         """
         payload: dict[str, Any] = {"turn_id": turn.turn_id, **fields}
         latency = turn.response_latency
@@ -394,6 +482,10 @@ class TurnStore:
             turn.total_response_latency = latency
             payload["total_response_latency"] = latency
             payload["degraded"] = turn.degraded
+            turn.published_degraded = turn.degraded
+        elif turn.degraded != turn.published_degraded:
+            payload["degraded"] = turn.degraded
+            turn.published_degraded = turn.degraded
         return envelope("turn", payload, ts=ts, speech_id=turn.turn_id)
 
     # -------------------------------------------------------------- transcripts
@@ -493,9 +585,7 @@ class TurnStore:
 
     def estimated_cost_usd(self) -> float:
         return pricing.estimate_cost_usd(
-            llm_model=self._models.llm,
-            prompt_tokens=self._prompt_tokens,
-            completion_tokens=self._completion_tokens,
+            llm_usage={model: (p, c) for model, (p, c) in self._llm_usage.items()},
             stt_model=self._models.stt,
             stt_audio_seconds=self._stt_audio_seconds,
             tts_model=self._models.tts,
@@ -540,12 +630,14 @@ class TurnStore:
             self._current_turn_id = turn_id
             if "llm" in payload:
                 previous = turn.llm or {}
-                self._prompt_tokens += payload["llm"].get("prompt_tokens", 0) - previous.get(
-                    "prompt_tokens", 0
+                # Attributed to the model the block names, so a replayed call that
+                # straddled a chaos swap is priced the way the live call was.
+                self._add_llm_tokens(
+                    payload["llm"].get("model", self._models.llm),
+                    payload["llm"].get("prompt_tokens", 0) - previous.get("prompt_tokens", 0),
+                    payload["llm"].get("completion_tokens", 0)
+                    - previous.get("completion_tokens", 0),
                 )
-                self._completion_tokens += payload["llm"].get(
-                    "completion_tokens", 0
-                ) - previous.get("completion_tokens", 0)
             if "stt" in payload:
                 previous = turn.stt or {}
                 self._stt_audio_seconds += payload["stt"].get("audio_duration", 0.0) - previous.get(
@@ -557,7 +649,7 @@ class TurnStore:
             if "total_response_latency" in payload:
                 turn.total_response_latency = payload["total_response_latency"]
             if "degraded" in payload:
-                turn.degraded = payload["degraded"]
+                turn.degraded = turn.published_degraded = payload["degraded"]
         elif kind == "transcript":
             turn_id = payload["turn_id"]
             turn = self._turns.setdefault(turn_id, Turn(turn_id=turn_id))
@@ -590,7 +682,10 @@ class TurnStore:
         )
         lines = [waterfall]
         if last.degraded:
-            lines.append("That turn ran with chaos mode injecting extra model latency.")
+            lines.append(
+                "That turn ran with chaos mode degrading the pipeline — injected "
+                "latency, a heavier model, or a clamped answer length."
+            )
 
         avg = sum(t.total_response_latency or 0.0 for t in done) / len(done)
         lines.append(

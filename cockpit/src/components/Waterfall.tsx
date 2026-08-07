@@ -324,8 +324,12 @@ function BargeInMarker({ x }: { x: number }) {
 
 /** What the dashed rule is, spelled out — "BUDGET" alone answered nothing. */
 const BUDGET_LABEL = `${LATENCY_BUDGET_SECONDS.toFixed(1)} s response budget`;
-/** Enough room to print BUDGET_LABEL to the right of the rule instead of left. */
-const BUDGET_LABEL_WIDTH = 132;
+/**
+ * Enough room to print BUDGET_LABEL to the right of the rule instead of left.
+ * Grew with the type scale — at 12 px the label is wider than the 11 px one
+ * this was measured for, and an under-estimate here runs it off the card.
+ */
+const BUDGET_LABEL_WIDTH = 150;
 
 function Axis({ width, scale, budgetX }: { width: number; scale: number; budgetX: number }) {
   const step = tickStep(scale);

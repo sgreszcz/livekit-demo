@@ -39,7 +39,7 @@ in **seconds** (SDK-native), frontend renders ms.
             "tokens_per_second": 48.0, "llm_calls": 1, "model": "..." },
   "tts": { "ttfb": 0.18, "duration": 1.90, "audio_duration": 3.40, "model": "cartesia/sonic-3" },
   "total_response_latency": 0.95,   // eou.end_of_utterance_delay + llm.ttft + tts.ttfb (agent computes)
-  "degraded": false                 // true if chaos delay was applied to this turn's LLM chain
+  "degraded": false                 // true if ANY chaos injection was applied to any stage of this turn
 }
 ```
 
@@ -107,8 +107,13 @@ same store as remote telemetry. They are never sent over the data channel, and
 appear only in browser-posted debriefs.
 
 ```json
-{ "rtt_ms": 48, "jitter_ms": 4.1, "packet_loss_pct": 0.0, "quality": "excellent | good | poor | lost | unknown" }
+{ "rtt_ms": 48, "jitter_ms": 4.1, "packet_loss_pct": 0.0, "quality": "excellent | good | poor | lost | unknown",
+  "audio_level_in": 0.31, "audio_level_out": 0.02,          // 0..1, agent inbound / mic outbound (v1.3, optional)
+  "bitrate_in_kbps": 24.1, "bitrate_out_kbps": 31.7,        // optional
+  "jitter_buffer_ms": 61.0,                                  // inbound jitter buffer delay (optional)
+  "concealed_pct": 0.4 }                                     // % of received samples concealed — audible loss (optional)
 ```
+All v1.3 fields are optional; consumers render "—" when absent.
 
 ### `call_meta` — once, on agent join
 ```json
@@ -130,8 +135,18 @@ The snapshot is a retransmission, not an emission: it does not appear in debrief
 ## Control channel (browser → agent, topic `cockpit-control`)
 
 ```json
-{ "v": 1, "type": "chaos", "payload": { "llm_delay_ms": 800 } }   // 0 = off
+{ "v": 1, "type": "chaos", "payload": {
+    "llm_delay_ms": 800,          // 0 = off
+    "tts_delay_ms": 500,          // v1.3: delay before speech synthesis starts; 0 = off
+    "slow_model": true,           // v1.3: swap the LLM to a deliberately heavier model
+    "max_completion_tokens": 30   // v1.3: token starvation — answers audibly truncate; null = off
+} }
 ```
+Every field is optional; the agent applies only the fields present (absent = unchanged)
+and acks with a `chaos` envelope carrying the FULL current state:
+`{ "llm_delay_ms": …, "tts_delay_ms": …, "slow_model": …, "max_completion_tokens": …, "active": … }`
+(`active` = any injection nonzero/enabled). A turn is `degraded` if any injection was
+actually applied to any stage of that turn.
 
 ## Debrief (agent → Worker, HTTP POST at session end)
 

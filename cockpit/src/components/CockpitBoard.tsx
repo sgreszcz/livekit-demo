@@ -13,22 +13,26 @@ import { ConnectionInfo } from './ConnectionInfo';
 import { ChaosControl } from './ChaosControl';
 import { TransportLamp, TransportPanel } from './TransportPanel';
 import {
+  activeInjectionCount,
   callDurationSeconds,
   interruptionTotals,
   latencyAggregates,
   latestTransport,
+  type ChaosState,
   type CockpitState,
   type InterruptionTotals,
   type LatencyAggregates,
 } from '../telemetry/store';
+import type { ChaosInjections } from '../telemetry/schema';
 import { duration, ms } from '../format';
 
 export interface ChaosControls {
-  delayMs: number;
+  /** What this browser has asked the agent for. */
+  request: ChaosInjections;
   disabled: boolean;
   /** Overrides the disabled-state copy where the usual reason does not apply. */
   note?: string;
-  onChange: (delayMs: number) => void;
+  onChange: (patch: Partial<ChaosInjections>) => void;
 }
 
 interface CockpitBoardProps {
@@ -105,13 +109,10 @@ export function CockpitBoard({ state, follow, live = false, chaos }: CockpitBoar
           </Panel>
 
           {chaos ? (
-            <Panel
-              legend="Chaos injection"
-              aside={state.chaos.active ? `+${state.chaos.llmDelayMs} ms` : 'nominal'}
-            >
+            <Panel legend="Chaos engineering" aside={chaosReadout(state.chaos)}>
               <ChaosControl
-                delayMs={chaos.delayMs}
-                acknowledged={state.chaos.active && state.chaos.llmDelayMs === chaos.delayMs}
+                request={chaos.request}
+                acked={state.chaos}
                 disabled={chaos.disabled}
                 disabledNote={chaos.note}
                 onChange={chaos.onChange}
@@ -140,6 +141,19 @@ function latencyReadout(latency: LatencyAggregates): string {
   parts.push(`worst ${ms(latency.worst)} ms`);
   parts.push(`${latency.overBudget} of ${latency.measured} over budget`);
   return parts.join(' · ');
+}
+
+/**
+ * The panel head's one-line verdict on chaos.
+ *
+ * Counted from the ack rather than from the switches, and phrased as a count
+ * rather than as a value, because four injections no longer fit on one line —
+ * and "2 active" is the thing a viewer needs from six feet away. Which two is
+ * printed against each control inside the panel.
+ */
+function chaosReadout(chaos: ChaosState): string {
+  const active = activeInjectionCount(chaos);
+  return active === 0 ? 'nominal' : `${active} active`;
 }
 
 function interruptionReadout({ bargeIns, falseInterruptions }: InterruptionTotals): string {

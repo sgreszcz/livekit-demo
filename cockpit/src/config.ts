@@ -22,4 +22,13 @@ export const PHONE_DISPLAY: string = displayOverride || numberOverride || '+44 2
 
 export const SITE_URL = 'https://agentmaker.io';
 
+/**
+ * The same aggregate the dashboard draws, in Grafana.
+ *
+ * Linked rather than hidden: `/api/metrics` is public and uncredentialed by
+ * design, this page and that dashboard scrape the identical body, and saying so
+ * is cheaper than being caught claiming two sources agree when nobody can check.
+ */
+export const GRAFANA_URL = 'https://agentmaker.grafana.net/d/glass-cockpit-fleet';
+
 export const REPO_URL: string = env.VITE_REPO_URL ?? 'https://github.com/sgreszcz/livekit-demo';
