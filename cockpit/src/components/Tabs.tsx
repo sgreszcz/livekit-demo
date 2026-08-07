@@ -23,10 +23,11 @@ interface Tab {
 
 /**
  * A debrief is a cockpit — the same instruments over a recording — so it lights
- * the Cockpit tab rather than leaving the bar with nothing current on it.
+ * the Cockpit tab rather than leaving the bar with nothing current on it. So is
+ * `/live`: the same instruments over somebody else's call.
  */
 const TABS: Tab[] = [
-  { path: '/', label: 'Cockpit', kinds: ['home', 'debrief'] },
+  { path: '/', label: 'Cockpit', kinds: ['home', 'debrief', 'live'] },
   { path: '/dashboard', label: 'Dashboard', kinds: ['dashboard'] },
 ];
 

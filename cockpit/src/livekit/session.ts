@@ -203,6 +203,21 @@ export class CockpitSession {
    */
   readonly observing: boolean;
   private audioElements = new Set<HTMLMediaElement>();
+  /**
+   * Whether the elements this session attaches are silent.
+   *
+   * An observer starts muted, and the reason is acoustic rather than tidy: the
+   * call being watched is very often the watcher's own, on the phone next to the
+   * laptop. Laptop speakers into a phone microphone is an echo loop the agent
+   * hears too, so it degrades the very call the instruments are measuring.
+   *
+   * Muting the ELEMENT rather than skipping the attach, or unsubscribing, is
+   * what makes unmuting instant: the track stays subscribed and flowing, so
+   * `setAudioMuted(false)` is a property write rather than a renegotiation. It
+   * also keeps telemetry entirely out of it — envelopes arrive on the data
+   * channel, which no audio element has ever had an opinion about.
+   */
+  private audioMuted: boolean;
 
   private readonly clock = new AgentClock();
   private emit: (envelope: Envelope) => void = () => {};
@@ -222,6 +237,10 @@ export class CockpitSession {
   private constructor(room: Room, observing: boolean) {
     this.room = room;
     this.observing = observing;
+    // A caller is audible from the first frame — they are on the call, and a
+    // phone call that starts silent is a broken phone call. Only the bystander
+    // starts muted.
+    this.audioMuted = observing;
   }
 
   /**
@@ -254,6 +273,11 @@ export class CockpitSession {
       if (track.kind !== Track.Kind.Audio) return;
       const element = track.attach();
       element.autoplay = true;
+      // Set before the element reaches the document, so there is no window —
+      // not even one frame — in which an observer's laptop can make a sound.
+      // A track that arrives after the visitor pressed Listen inherits the
+      // session's current state rather than reverting to silence.
+      element.muted = this.audioMuted;
       this.audioElements.add(element);
       document.body.appendChild(element);
     });
@@ -394,13 +418,17 @@ export class CockpitSession {
     });
 
     /*
-     * Ask the browser to let this call make noise.
+     * Ask the browser to let this call make noise — before it has any reason to.
      *
-     * A caller never needs this: granting a microphone unlocks audio playback as
-     * a side effect. An observer grants nothing, so it lands squarely in
-     * autoplay policy — and the click that started this has been spent on a
-     * token round trip and a room connect by the time any track arrives, so the
-     * transient user activation may already have expired.
+     * An observer's tracks are attached muted, so nothing here is trying to play
+     * anything yet. What this buys is the unlock itself: a caller gets one free,
+     * because granting a microphone unlocks playback as a side effect, while an
+     * observer grants nothing and lands squarely in autoplay policy. Spending
+     * the activation from the click that started the join — the freshest one
+     * this page will ever have — means the later press of Listen is a property
+     * write on an already-unlocked context rather than a second negotiation with
+     * the browser. `setAudioMuted` asks again on unmute regardless, since that
+     * press is itself a user gesture and browsers differ on which one counts.
      *
      * Attempted, never awaited, and probed structurally rather than assumed: a
      * browser that refuses leaves a working instrument panel and a silent call,
@@ -632,6 +660,30 @@ export class CockpitSession {
   async setMicrophoneEnabled(enabled: boolean): Promise<void> {
     this.assertWritable('The microphone');
     await this.room.localParticipant.setMicrophoneEnabled(enabled);
+  }
+
+  /**
+   * Silences or restores what this session is playing — the watcher's speakers,
+   * not the call.
+   *
+   * Deliberately NOT `assertWritable`: this publishes nothing and touches no
+   * track. It is a local playback decision, which is exactly why an observer —
+   * the one session type forbidden to change anything about the call — is
+   * allowed to make it.
+   *
+   * Never rejects. A browser that refuses to lift its autoplay block leaves the
+   * elements unmuted and silent, which the next user gesture may well fix; a
+   * thrown error here would instead leave the button's own state arguing with
+   * the session's.
+   */
+  async setAudioMuted(muted: boolean): Promise<void> {
+    this.audioMuted = muted;
+    for (const element of this.audioElements) element.muted = muted;
+    if (muted) return;
+    // Unmuting is the first moment this page has actually asked to make a
+    // sound, and it happens under a fresh user gesture — the best conditions
+    // an autoplay unlock will ever get. See the note in `observe`.
+    if (hasStartAudio(this.room)) await this.room.startAudio().catch(() => {});
   }
 
   async disconnect(): Promise<void> {

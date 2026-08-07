@@ -11,9 +11,11 @@ LIVEKIT_API_SECRET trio.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -23,6 +25,7 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     AgentStateChangedEvent,
+    CloseEvent,
     ConversationItemAddedEvent,
     JobContext,
     MetricsCollectedEvent,
@@ -45,12 +48,15 @@ from chaos import (
 )
 from telemetry import (
     CONTROL_TOPIC,
+    DebriefUploader,
     PipelineModels,
     TelemetryPublisher,
     TurnStore,
+    classify_entry_room,
     envelope,
     is_observer,
-    post_debrief,
+    log_call_summary,
+    redact_room_name,
 )
 
 load_dotenv()
@@ -112,12 +118,25 @@ the dashboard, and invited them to ask anything or to ask how the call quality i
 greet them again and do not reintroduce yourself — pick the conversation up from there, \
 and if their first question is broad, offer the latency waterfall or chaos mode as places \
 to start.
+
+If they ask who can see this — whether the call is public, recorded, or being watched — \
+be straight with them rather than reassuring: the dashboard for this call is reachable by \
+anyone with the link, a read-only observer can join at any point and is replayed \
+everything measured so far, and what they see is telemetry and transcripts, not the audio. \
+Answer it plainly and move on; do not volunteer it unprompted.
 """
 
 # Spoken verbatim the moment the session starts, instead of asking the model to compose a
 # greeting. A generated opener costs a full LLM round-trip before the first audio byte —
 # on a demo whose entire subject is latency, the first thing the visitor experiences must
 # not be the slowest thing on the call.
+#
+# A spoken observation notice was tried here and deliberately removed. Every word of this
+# sentence is on the critical path of the one number this demo exists to show, and the
+# disclosure does not need to be spoken to be given: it lives on the web page, where a
+# visitor reads it before the call starts and it costs no audio at all. The persona is
+# still instructed (see INSTRUCTIONS) to answer honestly the moment a caller asks who can
+# see this — which is free at runtime and is where the question actually gets asked.
 GREETING = (
     "Welcome to Glass Cockpit. You're talking to a live LiveKit voice agent, and every "
     "measurement of this call — including this sentence — is streaming to the dashboard. "
@@ -294,8 +313,48 @@ async def wait_for_caller(room: rtc.Room) -> rtc.RemoteParticipant:
         room.off("participant_active", _consider)
 
 
-async def _resolve_entry(ctx: JobContext) -> str:
-    return classify_entry(await wait_for_caller(ctx.room))
+async def _warn_on_entry_mismatch(room: rtc.Room, expected: str) -> None:
+    """Cross-check the room-name entry classification against the real caller.
+
+    ``classify_entry_room`` is authoritative — it is synchronous, it cannot fail, and the
+    worker classifies the same way — but it is an inference from a naming convention, and
+    a naming convention can change under us. This watches for that: it waits for the
+    caller, compares, and logs if they disagree.
+
+    It is deliberately fire-and-forget and deliberately gates NOTHING. Its predecessor
+    was awaited inline, and because ``wait_for_caller`` has no timeout, a caller who hung
+    up before the agent finished connecting meant the await never resolved — so the
+    shutdown callback registered after it was never registered, and the call left no
+    record whatsoever. That await is why calls disappeared; it never gets to block again.
+    """
+    try:
+        participant = await wait_for_caller(room)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("entry cross-check failed")
+        return
+    observed = classify_entry(participant)
+    if observed != expected:
+        logger.warning(
+            "entry mismatch: room name implies %s but caller %s is %s — the room naming "
+            "convention may have changed",
+            expected,
+            # A SIP participant identity is `sip_+447700900123` — the caller's
+            # number. This warning fires precisely when room naming has changed
+            # under us, which is exactly when somebody will be reading the logs.
+            redact_room_name(participant.identity),
+            observed,
+        )
+
+
+def _close_reason(reason: Any) -> str:
+    """The wire value of a ``CloseReason``, e.g. ``participant_disconnected``.
+
+    ``CloseReason`` is a ``str`` Enum, so ``str()`` on it yields ``CloseReason.X`` rather
+    than the value a log aggregator should group by; ``.value`` is the stable name.
+    """
+    return str(getattr(reason, "value", reason))
 
 
 server = AgentServer()
@@ -338,25 +397,94 @@ async def entrypoint(ctx: JobContext) -> None:
         if is_observer(participant.identity):
             publisher.snapshot_to(participant.identity)
 
-    entry = await _resolve_entry(ctx)
+    # Everything from here to add_shutdown_callback is either synchronous or a bounded
+    # await, on purpose. This is the window in which the call becomes recoverable, and
+    # nothing that can block indefinitely is allowed inside it — see
+    # _warn_on_entry_mismatch for the await that used to be here and why it isn't.
     call_id = await ctx.room.sid or ctx.job.id
-    meta = store.call_meta(call_id=call_id, room=ctx.room.name, started_at=started_at, entry=entry)
+    entry = classify_entry_room(ctx.room.name)
+    # Redacted before it is ever stored or transmitted. `call_meta` goes on the data
+    # channel to every participant, observers included, and into the debrief that anyone
+    # holding a share link can fetch; a SIP room name carries the caller's number.
+    meta = store.call_meta(
+        call_id=call_id,
+        room=redact_room_name(ctx.room.name),
+        started_at=started_at,
+        entry=entry,
+    )
     publisher.emit(meta)
 
-    async def _debrief() -> None:
-        await publisher.aclose()
-        share_url = await post_debrief(
-            url=os.getenv("DEBRIEF_URL"),
-            token=os.getenv("DEBRIEF_TOKEN"),
-            call_id=call_id,
-            meta=meta["payload"],
-            messages=publisher.messages,
-            ended_at=time.time(),
-        )
+    uploader = DebriefUploader(
+        url=os.getenv("DEBRIEF_URL"),
+        token=os.getenv("DEBRIEF_TOKEN"),
+        call_id=call_id,
+        meta=meta["payload"],
+        publisher=publisher,
+    )
+    uploader.start()
+
+    # The session close time, captured the moment it happens. The job can outlive the
+    # session by minutes, so this is the only truthful `ended_at`; falling back to the
+    # job's own clock is what once stored a 10.5-second call as 4376 seconds long.
+    closed_at: float | None = None
+    # Strong references. `asyncio.create_task` only keeps a weak one, so a task nobody
+    # holds can be garbage-collected mid-await; the final debrief is not something to
+    # leave to the collector's discretion.
+    flush_task: asyncio.Task[None] | None = None
+    entry_task: asyncio.Task[None] | None = None
+    # Exactly one `call_summary` line per call: a log aggregator counts lines, and a
+    # second one from the shutdown path would double every call in the fleet totals.
+    # The final UPLOAD is retried on failure; the summary is not, because it cannot fail.
+    summarised = False
+
+    async def _finish(reason: str, ended_at: float) -> None:
+        """Log the call summary and flush the final debrief. Never raises."""
+        nonlocal summarised
+        try:
+            if not summarised:
+                summarised = True
+                log_call_summary(
+                    store.call_summary(
+                        call_id=call_id,
+                        entry=entry,
+                        # Redacted inside call_summary; the raw name never leaves here.
+                        room=ctx.room.name,
+                        close_reason=reason,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                    ),
+                    log=logger,
+                )
+        except Exception:
+            logger.exception("failed to build the call summary")
+        share_url = await uploader.finalize(ended_at=ended_at)
         if share_url:
             logger.info("call replay available at %s", share_url)
 
+    async def _debrief() -> None:
+        """Job-shutdown path: belt to the session-close braces.
+
+        Runs when the ROOM closes, which is not when the call ends — an observer or an
+        abandoned tab can hold a room open indefinitely after the caller hangs up. By
+        then `finalize` has usually already succeeded and this is a no-op; it earns its
+        keep when the session-close flush failed, or when the job dies without the
+        session ever emitting `close` at all.
+        """
+        if entry_task is not None:
+            entry_task.cancel()
+        if flush_task is not None and not flush_task.done():
+            # Let the session-close flush finish rather than racing it. It is bounded by
+            # FINAL_TIMEOUT, and cancelling an upload that is about to succeed in order
+            # to start the same upload again is the worst use of a 10 s budget.
+            with contextlib.suppress(Exception):
+                await flush_task
+        await publisher.aclose()
+        await _finish("job_shutdown", closed_at if closed_at is not None else time.time())
+
     ctx.add_shutdown_callback(_debrief)
+
+    # Diagnostic only, and started only now that the call is already recoverable.
+    entry_task = asyncio.create_task(_warn_on_entry_mismatch(ctx.room, entry), name="cockpit-entry")
 
     session = AgentSession(
         stt=models.stt,
@@ -373,6 +501,31 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_detection=inference.TurnDetector(),
     )
     _wire_telemetry(session, store, publisher)
+
+    @session.on("close")
+    def _on_close(ev: CloseEvent) -> None:
+        """Flush the debrief when the CALL ends, not when the job does.
+
+        This is the fix for the failure that lost most of production's calls. The job
+        shuts down when the ROOM closes, and a room stays open while anyone is in it: an
+        observer cockpit that joined to watch, or a browser tab someone forgot. Observed
+        live — the session closed on a SIP hangup and eleven minutes later the process
+        was still running with the debrief unposted, one drain or redeploy away from
+        losing the call for good. The session-close event is the first moment the system
+        knows the call is over, so it is where the record gets written.
+
+        The SDK dispatches this handler synchronously, so the work is handed to a task —
+        and the task is held, because create_task alone would not.
+        """
+        nonlocal closed_at, flush_task
+        if closed_at is None:
+            closed_at = ev.created_at
+        if flush_task is not None:
+            return
+        logger.info("session closed (%s); flushing debrief", _close_reason(ev.reason))
+        flush_task = asyncio.create_task(
+            _finish(_close_reason(ev.reason), ev.created_at), name="cockpit-final-debrief"
+        )
 
     await session.start(agent=GlassCockpitAgent(store), room=ctx.room)
     # say(), not generate_reply(): the greeting is fixed text, so there is nothing to

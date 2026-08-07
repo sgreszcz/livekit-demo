@@ -4,6 +4,10 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // Lets the tests import the real production debriefs in test-fixtures/ as
+    // modules, so the arithmetic is checked against recordings rather than
+    // against fixtures written to agree with it.
+    "resolveJsonModule": true,
     "types": ["@cloudflare/workers-types"],
 
     "strict": true,

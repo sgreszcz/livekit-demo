@@ -284,9 +284,18 @@ const MAX_STAGE_SECONDS = 3600;
 const isDuration = (value: unknown): value is number =>
   isNumber(value) && value >= 0 && value <= MAX_STAGE_SECONDS;
 
-/** Token and character counts: non-negative, and not large enough to overflow. */
+/**
+ * Token and character counts: non-negative, and not large enough to overflow.
+ *
+ * A trillion is already several orders of magnitude past any real call, and it
+ * is the point past which a numeral stops being a reading and starts being a
+ * layout problem — the ledger prints these, and a sixteen-digit token count
+ * shoulders the panel apart. `MAX_SAFE_INTEGER` was a guard against arithmetic
+ * losing precision; this is a guard against the page.
+ */
+const MAX_COUNT = 1e12;
 const isCount = (value: unknown): value is number =>
-  isNumber(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+  isNumber(value) && value >= 0 && value <= MAX_COUNT;
 
 /**
  * Transport figures arrive in milliseconds, not seconds. A minute of round-trip
@@ -316,7 +325,85 @@ const MAX_BITRATE_KBPS = 100_000;
 const isBitrate = (value: unknown): value is number =>
   isNumber(value) && value >= 0 && value <= MAX_BITRATE_KBPS;
 
-const isString = (value: unknown): value is string => typeof value === 'string';
+/**
+ * A wall-clock reading in unix SECONDS, bounded at both ends.
+ *
+ * Finiteness alone is not enough here, and this is the sharpest edge in the
+ * file. `ts` is subtracted from `ts` in `callDurationSeconds` and in every
+ * elapsed figure derived from it, and two finite doubles at opposite ends of
+ * the range subtract to `Infinity` — which renders as "Infinitym" and "NaNs" on
+ * a page whose stated rule is that no instrument may ever print either. A
+ * debrief is fetched by id from a link anyone can paste, so this is reachable by
+ * anyone who can POST one.
+ *
+ * The floor is 0 rather than an epoch: fixtures and tests legitimately count
+ * from zero, and a negative timestamp is the only one that reverses the axis.
+ * The ceiling is the year 2100, which no live call will ever exceed and which
+ * leaves the subtraction bounded by construction rather than by luck.
+ */
+const MAX_TIMESTAMP_SECONDS = 4_102_444_800;
+const isTimestamp = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= MAX_TIMESTAMP_SECONDS;
+
+/**
+ * Injected delays, in milliseconds. Ten minutes is far past anything the chaos
+ * panel can arm and far short of a figure that distorts the state strip; the
+ * point is only that the ack cannot carry an unbounded one.
+ */
+const MAX_INJECTED_DELAY_MS = 600_000;
+const isDelayMs = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= MAX_INJECTED_DELAY_MS;
+
+/**
+ * Running cost, in dollars. A voice demo does not spend a million dollars, and
+ * an unbounded figure here is a cost ledger printing a number wide enough to
+ * shoulder the panel apart — the same class of failure as an unbounded duration,
+ * just quieter about it.
+ */
+const MAX_COST_USD = 1_000_000;
+const isCost = (value: unknown): value is number =>
+  isNumber(value) && value >= 0 && value <= MAX_COST_USD;
+
+/**
+ * Identifiers, model names, room names — anything that is a label rather than
+ * prose. None of these is legitimately longer than a line, and each one reaches
+ * the page as an attribute, a key or a placard. `isString` with no ceiling let a
+ * quarter of a megabyte through on a field that renders inside a chip.
+ */
+export const MAX_IDENTIFIER_CHARS = 200;
+const isString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= MAX_IDENTIFIER_CHARS;
+
+/**
+ * Prose: the one field where length is content rather than an attack, so it gets
+ * a much larger allowance and is truncated for display rather than rejected.
+ *
+ * The cap here is the outer bound of what will be accepted at all — a single
+ * utterance beyond this is not a transcript. `clampTranscriptText` below is what
+ * decides how much of an accepted line is drawn, and the two are deliberately
+ * different numbers: dropping a long line loses information, drawing all of it
+ * costs a layout pass proportional to whatever an attacker chose to send.
+ */
+export const MAX_TRANSCRIPT_CHARS = 20_000;
+const isTranscriptText = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= MAX_TRANSCRIPT_CHARS;
+
+/**
+ * How much of a transcript line is ever rendered.
+ *
+ * Applied on the way into the store rather than at each render site, so that
+ * every consumer — the transcript panel, a turn's drawer, a future export —
+ * inherits it without having to remember. The ellipsis is honest: it says the
+ * line was cut rather than pretending it ended there.
+ */
+export const MAX_RENDERED_TRANSCRIPT_CHARS = 4000;
+
+export function clampTranscriptText(text: string): string {
+  return text.length <= MAX_RENDERED_TRANSCRIPT_CHARS
+    ? text
+    : `${text.slice(0, MAX_RENDERED_TRANSCRIPT_CHARS)}…`;
+}
+
 const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean';
 
 const optional =
@@ -386,7 +473,8 @@ const isAgentState = isMember<AgentState>('initializing', 'listening', 'thinking
 const isTranscriptPayload = (value: unknown): boolean =>
   isRecord(value) &&
   isTranscriptRole(value.role) &&
-  isString(value.text) &&
+  // The one prose field in the contract, and the only one allowed to be long.
+  isTranscriptText(value.text) &&
   isBoolean(value.final) &&
   isString(value.turn_id);
 
@@ -404,7 +492,7 @@ const isUsagePayload = (value: unknown): boolean =>
   isCount(value.llm_completion_tokens) &&
   isCount(value.stt_audio_seconds) &&
   isCount(value.tts_characters) &&
-  isCount(value.est_cost_usd);
+  isCost(value.est_cost_usd);
 
 /**
  * A completion-token ceiling. `null` is a legitimate value on the wire — it is
@@ -416,9 +504,9 @@ const isTokenCeiling = (value: unknown): boolean =>
 
 const isChaosPayload = (value: unknown): boolean =>
   isRecord(value) &&
-  isCount(value.llm_delay_ms) &&
+  isDelayMs(value.llm_delay_ms) &&
   isBoolean(value.active) &&
-  optional(isCount)(value.tts_delay_ms) &&
+  optional(isDelayMs)(value.tts_delay_ms) &&
   optional(isBoolean)(value.slow_model) &&
   // Not `optional(...)`: this one has three states, and `undefined` is one of
   // them. Absent = unchanged from off, null = explicitly off, a count = armed.
@@ -428,7 +516,9 @@ const isCallMetaPayload = (value: unknown): boolean =>
   isRecord(value) &&
   isString(value.call_id) &&
   isString(value.room) &&
-  isNumber(value.started_at) &&
+  // A clock reading like `ts`, and bounded for the same reason: the debrief
+  // header prints the call's start and every elapsed figure counts from it.
+  isTimestamp(value.started_at) &&
   isRecord(value.pipeline) &&
   isString(value.pipeline.stt) &&
   isString(value.pipeline.llm) &&
@@ -483,7 +573,7 @@ const PAYLOAD_GUARDS = new Map<string, (payload: unknown) => boolean>([
 export function isEnvelope(value: unknown): value is Envelope {
   if (!isRecord(value)) return false;
   if (value.v !== SCHEMA_VERSION) return false;
-  if (!isNumber(value.ts)) return false;
+  if (!isTimestamp(value.ts)) return false;
   if (!optional(isString)(value.speech_id)) return false;
   if (typeof value.type !== 'string') return false;
 

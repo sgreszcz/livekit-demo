@@ -783,6 +783,17 @@ a.placard__value:hover {
   color: var(--text-mute);
 }
 
+/* Separated by a hairline and nothing else. It is a different KIND of statement
+   from the caption above it — about the call rather than about the trunk — and
+   a rule is enough to say so. No colour of its own: amber and red on this page
+   mean injected chaos, and borrowing either would turn plain candour into a
+   warning about a demo phone number. */
+.placard__foot--note {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
 /* The hero's thumbnail waterfall: product proof above the fold. */
 .mini {
   margin-bottom: 14px;
@@ -1836,6 +1847,63 @@ a.placard__value:hover {
   min-width: 200px;
   margin: 0;
   font-size: var(--fs-sub);
+  color: var(--text-dim);
+}
+
+/* ── Holding pattern (/live with nothing to watch) ────────────────────── */
+
+/* Deliberately understated: this screen is meant to be left open on a second
+   monitor for minutes at a time, so it gets no spinner, no countdown and no
+   colour it has not earned. It is the hero's typographic scale at rest. */
+.holding {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  padding: 56px 0 40px;
+}
+
+.holding__title {
+  margin: 0;
+  font-size: clamp(26px, 4.4vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.holding__lede {
+  max-width: 54ch;
+  margin: 0;
+  font-size: var(--fs-sub);
+  color: var(--text-dim);
+}
+
+/* ── Observer bar ─────────────────────────────────────────────────────── */
+
+/* Violet, like the "Observing · read-only" lamp and for the same reason: this
+   browser is on the call without being part of it. It is emphatically not the
+   green of a live call — nothing here is on air — and not amber, which is spent
+   only on chaos. The muted default is a design decision the visitor did not
+   make, so the bar sits above the instruments and says so. */
+.observer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 14px;
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--model-line);
+  border-radius: var(--r-lg);
+  background: var(--model-wash);
+}
+
+/* One line, in the caption colour. It says what this page is and why it is
+   silent, and then stops — candour reads as candour when it is a caption and
+   as a warning when it is a banner, and nothing here is a warning. */
+.observer-bar__note {
+  flex: 1;
+  min-width: 220px;
+  margin: 0;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
 }
 

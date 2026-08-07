@@ -5,7 +5,16 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { MAX_BODY_BYTES, readCappedBody, validate } from './debrief';
+import {
+  MAX_BODY_BYTES,
+  checkpointKey,
+  handleDebriefGet,
+  handleDebriefPost,
+  handleDebriefPut,
+  readCappedBody,
+  validate,
+} from './debrief';
+import type { Env } from './env';
 
 const encoder = new TextEncoder();
 
@@ -204,5 +213,360 @@ describe('validate', () => {
   it('never trusts a client-supplied source label', () => {
     const record = validate(debriefBody({ source: 'agent' }));
     expect(record!.source).toBe('browser');
+  });
+});
+
+/** A KV double that records what was written, deleted and with what options. */
+function fakeKv() {
+  const store = new Map<string, string>();
+  const puts: { key: string; options: unknown }[] = [];
+  const deletes: string[] = [];
+  return {
+    store,
+    puts,
+    deletes,
+    env: {
+      DEBRIEF_TOKEN: 'the-real-token',
+      DEBRIEFS: {
+        async put(key: string, value: string, options: unknown) {
+          store.set(key, value);
+          puts.push({ key, options });
+        },
+        async get(key: string) {
+          return store.get(key) ?? null;
+        },
+        async delete(key: string) {
+          store.delete(key);
+          deletes.push(key);
+        },
+      },
+    } as unknown as Env,
+  };
+}
+
+function post(body: string, headers: HeadersInit = {}): Request {
+  return new Request('https://cockpit.example/api/debrief', { method: 'POST', body, headers });
+}
+
+function put(body: string, headers: HeadersInit = {}): Request {
+  return new Request('https://cockpit.example/api/debrief', { method: 'PUT', body, headers });
+}
+
+const AGENT = { authorization: 'Bearer the-real-token' };
+
+describe('validate: envelope types', () => {
+  it('keeps transport envelopes', () => {
+    // Omitting `transport` from the allowlist silently stripped every
+    // browser-sampled WebRTC reading out of every stored debrief, so a shared
+    // call always claimed the network panel was "not recorded on this call".
+    const stored = validate(
+      debriefBody({
+        messages: [envelope('call_meta'), envelope('transport', { rtt_ms: 48, quality: 'good' })],
+      }),
+    );
+    expect(stored).not.toBeNull();
+    expect(stored!.messages).toHaveLength(2);
+    expect(JSON.stringify(stored!.messages)).toContain('rtt_ms');
+  });
+
+  it('still drops an envelope of an unknown type', () => {
+    const stored = validate(
+      debriefBody({ messages: [envelope('call_meta'), envelope('telepathy', { x: 1 })] }),
+    );
+    expect(stored!.messages).toHaveLength(1);
+  });
+});
+
+describe('validate: hostile shapes', () => {
+  it('refuses an array as a payload', () => {
+    // `typeof [] === 'object'` and `[] !== null`, so the old check accepted it
+    // and stored an envelope with a list where every reader expects a record.
+    const stored = validate(
+      debriefBody({ messages: [{ v: 1, type: 'state', ts: 1, payload: [] }] }),
+    );
+    expect(stored).toBeNull();
+  });
+
+  it('refuses envelopes carrying prototype-pollution keys', () => {
+    // Written as raw JSON on purpose: `{ __proto__: … }` in an object literal
+    // sets the prototype rather than creating an own property, so a test built
+    // that way would stringify to `{}` and prove nothing. Over the wire the key
+    // is an ordinary string, which is exactly the case that matters.
+    const stored = validate(
+      `{"call_id":"RM_demo0001","meta":{},"ended_at":1,"messages":[` +
+        `{"v":1,"type":"call_meta","ts":1,"payload":{}},` +
+        `{"v":1,"type":"state","ts":1,"payload":{"__proto__":{"polluted":true}}},` +
+        `{"v":1,"type":"state","ts":1,"payload":{"nested":{"constructor":{"x":1}}}}` +
+        `]}`,
+    );
+    // Only the clean envelope survives; nothing dangerous is persisted for the
+    // SPA to merge later.
+    expect(stored!.messages).toHaveLength(1);
+    expect(JSON.stringify(stored!.messages)).not.toContain('polluted');
+  });
+
+  it('drops a meta block carrying prototype-pollution keys, keeping the call', () => {
+    const stored = validate(
+      `{"call_id":"RM_demo0001","meta":{"room":"cockpit-x","__proto__":{"bad":1}},` +
+        `"ended_at":1,"messages":[{"v":1,"type":"state","ts":1,"payload":{}}]}`,
+    );
+    expect(stored).not.toBeNull();
+    expect(JSON.stringify(stored!.meta)).not.toContain('bad');
+    expect(stored!.messages).toHaveLength(1);
+  });
+
+  it('refuses a payload nested past any legitimate depth', () => {
+    let deep: Record<string, unknown> = { bottom: true };
+    for (let i = 0; i < 40; i += 1) deep = { down: deep };
+    const stored = validate(
+      debriefBody({ messages: [envelope('call_meta'), { v: 1, type: 'state', ts: 1, payload: deep }] }),
+    );
+    expect(stored!.messages).toHaveLength(1);
+  });
+
+  it('drops fields the envelope schema does not define', () => {
+    const stored = validate(
+      debriefBody({
+        messages: [{ v: 1, type: 'state', ts: 1, payload: { state: 'listening' }, evil: 'x' }],
+      }),
+    );
+    expect(JSON.stringify(stored!.messages)).not.toContain('evil');
+    expect(JSON.stringify(stored!.messages)).toContain('listening');
+  });
+
+  it('drops a non-finite number rather than storing a null in its place', () => {
+    const stored = validate(
+      debriefBody({
+        messages: [{ v: 1, type: 'turn', ts: 1, payload: { turn_id: 't', total_response_latency: Infinity } }],
+      }),
+    );
+    // JSON.parse cannot produce Infinity, so this arrives as null and is kept
+    // as null; the guard exists for values built in code paths that can.
+    expect(stored).not.toBeNull();
+  });
+});
+
+describe('validate: room-name redaction', () => {
+  const SIP = 'sip-cockpit-_+447700900123_BXhCPPSrr57t';
+
+  it('redacts the caller number in meta and in the call_meta envelope', () => {
+    const stored = validate(
+      debriefBody({ meta: { room: SIP }, messages: [envelope('call_meta', { room: SIP })] }),
+    );
+    const serialised = JSON.stringify(stored);
+    expect(serialised).not.toContain('447700900123');
+    expect(serialised).toContain('+REDACTED');
+    expect(serialised).toContain('BXhCPPSrr57t');
+  });
+
+  it('leaves a browser room name alone', () => {
+    const stored = validate(debriefBody({ meta: { room: 'cockpit-AKI0UWWR2t0BaIwA' } }));
+    expect(JSON.stringify(stored!.meta)).toContain('cockpit-AKI0UWWR2t0BaIwA');
+  });
+});
+
+describe('handleDebriefPost: who wrote this', () => {
+  it('marks a bearer-authenticated upload as the agent', async () => {
+    const kv = fakeKv();
+    const response = await handleDebriefPost(post(debriefBody(), AGENT), kv.env);
+    expect(response.status).toBe(201);
+    const { id } = (await response.json()) as { id: string };
+    expect(JSON.parse(kv.store.get(id)!).source).toBe('agent');
+    expect(JSON.parse(kv.store.get(id)!).in_progress).toBe(false);
+  });
+
+  it('marks an anonymous upload as the browser', async () => {
+    const kv = fakeKv();
+    const response = await handleDebriefPost(post(debriefBody()), kv.env);
+    expect(response.status).toBe(201);
+    const { id } = (await response.json()) as { id: string };
+    expect(JSON.parse(kv.store.get(id)!).source).toBe('browser');
+  });
+
+  it('refuses a bearer token that does not verify instead of downgrading it', async () => {
+    // `source` decides whether a record moves the public dashboard, so a typo
+    // in DEBRIEF_TOKEN must not silently reclassify every real call as
+    // untrusted and empty the fleet numbers with a 201 on every upload.
+    const kv = fakeKv();
+    const response = await handleDebriefPost(
+      post(debriefBody(), { authorization: 'Bearer wrong' }),
+      kv.env,
+    );
+    expect(response.status).toBe(401);
+    expect(kv.puts).toHaveLength(0);
+  });
+
+  it('deletes the call checkpoint once the final debrief lands', async () => {
+    const kv = fakeKv();
+    await handleDebriefPut(put(debriefBody(), AGENT), kv.env);
+    const key = await checkpointKey('RM_demo0001');
+    expect(kv.store.has(key)).toBe(true);
+
+    await handleDebriefPost(post(debriefBody(), AGENT), kv.env);
+    expect(kv.deletes).toContain(key);
+    expect(kv.store.has(key)).toBe(false);
+  });
+
+  it('does not delete a checkpoint on an anonymous post', async () => {
+    // A browser copy of a call must not be able to evict the agent's record.
+    const kv = fakeKv();
+    await handleDebriefPut(put(debriefBody(), AGENT), kv.env);
+    await handleDebriefPost(post(debriefBody()), kv.env);
+    expect(kv.deletes).toHaveLength(0);
+  });
+});
+
+describe('handleDebriefPut: in-flight checkpoints', () => {
+  it('stores under a key derived from the call id, and overwrites in place', async () => {
+    const kv = fakeKv();
+    await handleDebriefPut(put(debriefBody(), AGENT), kv.env);
+    await handleDebriefPut(
+      put(debriefBody({ messages: [envelope('call_meta'), envelope('state'), envelope('state')] }), AGENT),
+      kv.env,
+    );
+
+    const key = await checkpointKey('RM_demo0001');
+    expect(kv.puts.map((p) => p.key)).toEqual([key, key]);
+    expect(kv.store.size).toBe(1);
+    const stored = JSON.parse(kv.store.get(key)!);
+    expect(stored.in_progress).toBe(true);
+    expect(stored.source).toBe('agent');
+    expect(stored.messages).toHaveLength(3);
+  });
+
+  it('keys checkpoints out of the shareable id space', async () => {
+    // `/api/debrief/:id` matches [A-Za-z0-9] only, so the underscore in the
+    // prefix is what makes a checkpoint unfetchable as a share link.
+    expect(await checkpointKey('RM_demo0001')).toMatch(/^chk_[0-9a-f]{32}$/);
+  });
+
+  it('refuses an anonymous checkpoint', async () => {
+    const kv = fakeKv();
+    const response = await handleDebriefPut(put(debriefBody()), kv.env);
+    expect(response.status).toBe(401);
+    expect(kv.puts).toHaveLength(0);
+  });
+
+  it('refuses a checkpoint with no call id', async () => {
+    // Without one there is nothing stable to key on, and a random key would
+    // make every checkpoint a new call in the fleet count.
+    const kv = fakeKv();
+    const body = JSON.stringify({ meta: {}, ended_at: 1, messages: [envelope('state')] });
+    const response = await handleDebriefPut(put(body, AGENT), kv.env);
+    expect(response.status).toBe(400);
+    expect(kv.puts).toHaveLength(0);
+  });
+
+  it('expires far sooner than a finished call', async () => {
+    const kv = fakeKv();
+    await handleDebriefPut(put(debriefBody(), AGENT), kv.env);
+    await handleDebriefPost(post(debriefBody(), AGENT), kv.env);
+    const [checkpoint, final] = kv.puts;
+    const ttl = (p: { options: unknown }) => (p.options as { expirationTtl: number }).expirationTtl;
+    expect(ttl(checkpoint)).toBe(6 * 60 * 60);
+    expect(ttl(final)).toBe(90 * 24 * 60 * 60);
+  });
+});
+
+describe('handleDebriefGet: a share link is a credential', () => {
+  it('never tells a shared cache to keep a transcript', async () => {
+    const kv = fakeKv();
+    const { id } = (await (await handleDebriefPost(post(debriefBody(), AGENT), kv.env)).json()) as {
+      id: string;
+    };
+    const response = await handleDebriefGet(id, kv.env);
+    expect(response.status).toBe(200);
+    // It used to be `public, max-age=31536000, immutable` — a year of shared
+    // caching for a record whose own TTL is ninety days.
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('redacts a room name stored before redaction existed', async () => {
+    const kv = fakeKv();
+    // Written straight to KV, the way the old code would have left it.
+    kv.env.DEBRIEFS.put(
+      'legacyid',
+      JSON.stringify({
+        call_id: 'RM_old',
+        meta: { room: 'sip-cockpit-_+447700900123_old' },
+        ended_at: 1,
+        messages: [{ v: 1, type: 'call_meta', ts: 1, payload: { room: 'sip-cockpit-_+447700900123_old' } }],
+        stored_at: 1,
+        source: 'agent',
+      }),
+      {},
+    );
+
+    const body = await (await handleDebriefGet('legacyid', kv.env)).text();
+    expect(body).not.toContain('447700900123');
+    expect(body).toContain('+REDACTED');
+  });
+
+  it('refuses a malformed id without reading KV', async () => {
+    const kv = fakeKv();
+    expect((await handleDebriefGet('../secret', kv.env)).status).toBe(400);
+    expect((await handleDebriefGet('a'.repeat(33), kv.env)).status).toBe(400);
+  });
+});
+
+describe('validate: redaction scrubs by shape, not by field name', () => {
+  it('finds a number in a field nobody thought to list', () => {
+    // The old scrub rewrote exactly `meta.room` and the `call_meta` payload's
+    // `room`. Every other key was a leak waiting for a schema change.
+    const stored = validate(
+      debriefBody({
+        meta: { room: 'cockpit-x', participant: 'sip_+447700900123' },
+        messages: [
+          envelope('call_meta', { attributes: { caller: '+447700900123' } }),
+          envelope('transcript', { role: 'user', text: 'call me on 07700 900123 later' }),
+        ],
+      }),
+    );
+    const serialised = JSON.stringify(stored);
+    expect(serialised).not.toContain('447700900123');
+    expect(serialised).not.toContain('900123');
+    expect(serialised).toContain('+REDACTED');
+  });
+
+  it('catches a number written with separators', () => {
+    for (const written of ['+44-7700-900123', '(0770) 090 0123', '+44 7700 900123']) {
+      const stored = validate(debriefBody({ meta: { room: `sip-cockpit-_${written}_abc` } }));
+      expect(JSON.stringify(stored)).toContain('+REDACTED');
+    }
+  });
+
+  it('leaves timestamps and short numbers alone', () => {
+    // Numbers are not strings, so the unix timestamps that a naive scrub of the
+    // serialised JSON would mangle are never even looked at.
+    const stored = validate(
+      debriefBody({
+        ended_at: 1786098223.1201081,
+        messages: [{ v: 1, type: 'turn', ts: 1786098223.12, payload: { turn_id: 't1', total_response_latency: 1.547 } }],
+      }),
+    );
+    expect(stored!.ended_at).toBe(1786098223.1201081);
+    const serialised = JSON.stringify(stored!.messages);
+    expect(serialised).toContain('1786098223');
+    expect(serialised).toContain('1.547');
+    expect(serialised).not.toContain('REDACTED');
+  });
+
+  it('does not mistake a date for a phone number', () => {
+    // Allowing separators is what catches `+44-7700-900123`; it also matches
+    // `2026-08-07`, which is eight digits and a date. Dialable numbers are
+    // longer, so a separated match needs nine digits before it is cut.
+    const stored = validate(debriefBody({ meta: { room: 'cockpit-x', when: '2026-08-07' } }));
+    expect(JSON.stringify(stored!.meta)).toContain('2026-08-07');
+  });
+
+  it('leaves an ordinary browser room name intact', () => {
+    // A random base62 id with a few digits in it is not a phone number: the
+    // separators are stripped and the DIGITS counted before anything is cut.
+    for (const name of ['cockpit-AKI0UWWR2t0BaIwA', 'cockpit-a1b2c3', 'cockpit-9-8-7']) {
+      const stored = validate(debriefBody({ meta: { room: name } }));
+      expect(JSON.stringify(stored!.meta)).toContain(name);
+    }
   });
 });

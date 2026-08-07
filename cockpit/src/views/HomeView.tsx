@@ -9,29 +9,17 @@ import { Footer } from '../components/Footer';
 import { LiveCallCard, type LiveCallEntry } from '../components/LiveCallCard';
 import { Mark } from '../components/Mark';
 import { MiniWaterfall } from '../components/MiniWaterfall';
+import { ModeLamp } from '../components/ModeLamp';
 import { Tabs } from '../components/Tabs';
+import { useBundleWatch, reloadableMode } from '../bundleWatch';
 import { PHONE_DISPLAY, PHONE_E164 } from '../config';
+import { navigate } from '../router';
 import { fixtureEnvelopes } from '../telemetry/fixtureSource';
 import { roomElapsedSeconds } from '../telemetry/activeRooms';
 import { callDurationSeconds, reduceAll } from '../telemetry/store';
 import { useActiveRooms } from '../useActiveRooms';
-import { useCockpit, type CockpitMode } from '../useCockpit';
+import { useCockpit } from '../useCockpit';
 import { duration, ms } from '../format';
-
-const LAMP: Record<CockpitMode, { className: string; label: string }> = {
-  idle: { className: 'lamp--idle', label: 'Standby' },
-  connecting: { className: 'lamp--warn', label: 'Connecting' },
-  live: { className: 'lamp--live', label: 'On air' },
-  replay: { className: 'lamp--live', label: 'Replay' },
-  // Violet, not the caller's green and not the chaos amber: this browser is on
-  // the call but is not part of it, and that is its own state.
-  observing: { className: 'lamp--observe', label: 'Observing · read-only' },
-  ended: { className: 'lamp--idle', label: 'Call ended' },
-  error: { className: 'lamp--fault', label: 'Fault' },
-};
-
-const OBSERVER_CHAOS_NOTE =
-  'Chaos injection is caller-side — this session is read-only. What is armed still shows.';
 
 export function HomeView() {
   const cockpit = useCockpit();
@@ -43,6 +31,14 @@ export function HomeView() {
   // network traffic bought for a list nobody can see.
   const onHero = mode === 'idle' || mode === 'error';
   const active = useActiveRooms(onHero);
+
+  /*
+   * An open tab keeps running the bundle it downloaded, so a deploy is invisible
+   * to everyone already on the page — which is exactly the audience during a
+   * demo. The hero is the only state here that can be thrown away without
+   * costing anything, so it is the only one that checks. See `bundleWatch`.
+   */
+  useBundleWatch(reloadableMode(mode));
 
   /**
    * Elapsed time is recomputed here, on each render, from the snapshot that is
@@ -76,7 +72,7 @@ export function HomeView() {
           Glass <span>Cockpit</span>
         </div>
         <Tabs route="home" />
-        <span className={`lamp ${LAMP[mode].className}`}>{LAMP[mode].label}</span>
+        <ModeLamp mode={mode} />
         <div className="topbar__spacer" />
         {/* One flex child holds every control, so when the bar wraps on a phone
             the controls travel together and stay right-aligned. */}
@@ -106,13 +102,6 @@ export function HomeView() {
               Cancel
             </button>
           ) : null}
-          {mode === 'observing' ? (
-            // No Mute beside it: an observer has no microphone to mute.
-            <button type="button" className="btn btn--quiet" onClick={cockpit.stopObserving}>
-              <span className="wide-only">Stop watching</span>
-              <span className="narrow-only">Stop</span>
-            </button>
-          ) : null}
           {mode === 'replay' ? (
             <button type="button" className="btn btn--quiet" onClick={() => void cockpit.endCall()}>
               <span className="wide-only">Stop replay</span>
@@ -132,8 +121,17 @@ export function HomeView() {
 
       {/* Above the hero and full width: on a phone this is the first thing on
           the screen, which is the point — someone else's call in progress is a
-          better invitation than any button. */}
-      <LiveCallCard calls={calls} onWatch={(room) => void cockpit.startObserving(room)} />
+          better invitation than any button.
+
+          Watching navigates to `/live` rather than joining in place, which
+          makes the act of watching a URL: the address bar now holds a link that
+          can be sent to someone else, and a refresh mid-watch rejoins instead of
+          dumping the visitor back on the pitch. `/live` owns the observer
+          experience entirely — this page never enters `observing` mode. */}
+      <LiveCallCard
+        calls={calls}
+        onWatch={(room) => navigate(`/live?room=${encodeURIComponent(room)}`)}
+      />
 
       {mode === 'idle' || mode === 'error' ? <Hero cockpit={cockpit} /> : null}
 
@@ -147,16 +145,14 @@ export function HomeView() {
         <CockpitBoard
           state={cockpit.state}
           follow={mode !== 'ended'}
-          /* False while observing, and the Transport panel's "not recorded"
-             note is the honest answer: transport is the caller's uplink,
-             measured from the microphone they publish. An observer publishes
-             nothing, and its own connection quality is a different network path
-             — showing it here would attribute this browser's network to them. */
+          /* True only for a call this browser is on. Transport is the caller's
+             uplink, measured from the microphone they publish; a replay and a
+             finished call have no live uplink at all, and the panel's "not
+             recorded" note is the honest answer for both. */
           live={mode === 'live'}
           chaos={{
             request: cockpit.chaosRequest,
             disabled: mode !== 'live',
-            note: mode === 'observing' ? OBSERVER_CHAOS_NOTE : undefined,
             onChange: (patch) => void cockpit.setChaos(patch),
           }}
         />
@@ -213,6 +209,21 @@ function Hero({ cockpit }: { cockpit: ReturnType<typeof useCockpit> }) {
           <div className="placard__foot">
             Call from any phone and you reach the same agent over a SIP trunk. The browser call is
             the one that draws these instruments live.
+          </div>
+          {/*
+           * Said once, quietly, in the caption colour, next to the thing it is
+           * about — the number someone is deciding whether to dial.
+           *
+           * It earns its place by being true and useful rather than defensive:
+           * this page's whole pitch is that a call is legible from the outside,
+           * and "a call in progress can be watched live from this page" is that
+           * pitch stated as a fact about the caller's own call. A banner would
+           * make it sound like a risk; a caption makes it sound like candour,
+           * which is what it is.
+           */}
+          <div className="placard__foot placard__foot--note">
+            Calls are demo calls — telemetry from every call is public, and a call in progress can
+            be watched live from this page.
           </div>
         </div>
 

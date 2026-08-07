@@ -32,7 +32,9 @@ export interface ActiveSnapshot {
  * that cannot work. Dropping it at parse time means a bad name can never reach
  * `/api/token` at all.
  */
-const OBSERVABLE_ROOM = /^(sip-)?cockpit-[A-Za-z0-9-]{1,40}$/;
+// SIP dispatch embeds the caller number in the room name (`sip-cockpit-_+44…`),
+// so `_` and `+` are legitimate. Must match the worker's token.ts pattern.
+const OBSERVABLE_ROOM = /^(sip-)?cockpit-[A-Za-z0-9+_-]{1,60}$/;
 
 export function isObservableRoom(name: string): boolean {
   return typeof name === 'string' && OBSERVABLE_ROOM.test(name);

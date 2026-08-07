@@ -1,0 +1,414 @@
+{
+  "call_id": "RM_afAp8gMmxZfC",
+  "meta": {
+    "call_id": "RM_afAp8gMmxZfC",
+    "room": "cockpit-KEdB5jqFfDavcm8p",
+    "started_at": 1786040875.507652,
+    "pipeline": {
+      "stt": "deepgram/nova-3",
+      "llm": "openai/gpt-4.1-mini",
+      "tts": "cartesia/sonic-3"
+    },
+    "entry": "browser"
+  },
+  "ended_at": 1786040995.556412,
+  "messages": [
+    {
+      "v": 1,
+      "type": "call_meta",
+      "ts": 1786040875.507652,
+      "payload": {
+        "call_id": "RM_afAp8gMmxZfC",
+        "room": "cockpit-KEdB5jqFfDavcm8p",
+        "started_at": 1786040875.507652,
+        "pipeline": {
+          "stt": "deepgram/nova-3",
+          "llm": "openai/gpt-4.1-mini",
+          "tts": "cartesia/sonic-3"
+        },
+        "entry": "browser"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040876.3318415,
+      "payload": {
+        "state": "listening",
+        "prev": "initializing"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040876.7513788,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040877.455483,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040878.0307314,
+      "speech_id": "speech_c319dca01afe",
+      "payload": {
+        "turn_id": "speech_c319dca01afe",
+        "llm": {
+          "ttft": 0.896,
+          "duration": 1.686,
+          "prompt_tokens": 577,
+          "completion_tokens": 60,
+          "tokens_per_second": 35.6,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040880.2128813,
+      "speech_id": "speech_c319dca01afe",
+      "payload": {
+        "turn_id": "speech_c319dca01afe",
+        "tts": {
+          "ttfb": 0.1,
+          "duration": 2.858,
+          "audio_duration": 14.443,
+          "model": "cartesia/sonic-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786040891.935043,
+      "speech_id": "speech_c319dca01afe",
+      "payload": {
+        "role": "agent",
+        "text": "Hello and welcome to Glass Cockpit. You're looking at a real-time dashboard showing every latency and cost metric from this very voice conversation. Feel free to ask me about the numbers you see or to try chaos mode by injecting latency and watching the impact unfold live. How would you like to start?",
+        "final": true,
+        "turn_id": "speech_c319dca01afe"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040891.9351335,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786040891.9351573,
+      "payload": {
+        "llm_prompt_tokens": 577,
+        "llm_completion_tokens": 60,
+        "stt_audio_seconds": 11.85,
+        "tts_characters": 302,
+        "est_cost_usd": 0.0049
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040897.162129,
+      "speech_id": "speech_87d8438c7363",
+      "payload": {
+        "turn_id": "speech_87d8438c7363",
+        "llm": {
+          "ttft": 0.303,
+          "duration": 1.598,
+          "prompt_tokens": 654,
+          "completion_tokens": 113,
+          "tokens_per_second": 70.7,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786040898.912359,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "role": "user",
+        "text": "Yeah. So what exactly can you do? And what's what's this interesting thing all about, and how's your voice quality?",
+        "final": true,
+        "turn_id": "speech_6b0286379dd0"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040898.912359,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "turn_id": "speech_6b0286379dd0",
+        "eou": {
+          "end_of_utterance_delay": 0.384,
+          "transcription_delay": 0.158
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040898.912359,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "turn_id": "speech_6b0286379dd0",
+        "stt": {
+          "duration": 0,
+          "audio_duration": 18.8,
+          "model": "deepgram/nova-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040898.915183,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040899.6074347,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040900.5488334,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "turn_id": "speech_6b0286379dd0",
+        "llm": {
+          "ttft": 0.245,
+          "duration": 1.861,
+          "prompt_tokens": 669,
+          "completion_tokens": 125,
+          "tokens_per_second": 67.2,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040905.620305,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "turn_id": "speech_6b0286379dd0",
+        "tts": {
+          "ttfb": 0.109,
+          "duration": 6.122,
+          "audio_duration": 33.576,
+          "model": "cartesia/sonic-3"
+        },
+        "total_response_latency": 0.738,
+        "degraded": false
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786040933.1933415,
+      "speech_id": "speech_6b0286379dd0",
+      "payload": {
+        "role": "agent",
+        "text": "This system demonstrates a live voice agent that processes speech through a pipeline: speech is transcribed to text, the language model generates a response, and then that response is turned back into speech—all while continuously reporting detailed telemetry. The dashboard you see tracks metrics like how quickly I detect when you finish speaking, how fast the model starts responding, and how soon audio playback begins, plus cost estimates. As for voice quality, it uses professional text-to-speech synthesis which you should find clear and natural for a live demo. Would you like me to walk you through the latency waterfall in more detail or check our current call performance?",
+        "final": true,
+        "turn_id": "speech_6b0286379dd0"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040933.193729,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786040933.1937547,
+      "payload": {
+        "llm_prompt_tokens": 1900,
+        "llm_completion_tokens": 298,
+        "stt_audio_seconds": 50.4,
+        "tts_characters": 985,
+        "est_cost_usd": 0.0176
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786040939.5548308,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "role": "user",
+        "text": "Yeah. What's the current call performance? Can you see the metrics yourself?",
+        "final": true,
+        "turn_id": "speech_64bc8d88e900"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040939.5548308,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "turn_id": "speech_64bc8d88e900",
+        "eou": {
+          "end_of_utterance_delay": 0.376,
+          "transcription_delay": 0.192
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040939.5548308,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "turn_id": "speech_64bc8d88e900",
+        "stt": {
+          "duration": 0,
+          "audio_duration": 40.65,
+          "model": "deepgram/nova-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040939.5577402,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040939.8778448,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "turn_id": "speech_64bc8d88e900",
+        "llm": {
+          "ttft": 0.475,
+          "duration": 0.504,
+          "prompt_tokens": 816,
+          "completion_tokens": 11,
+          "tokens_per_second": 21.8,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040940.4891999,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040941.414947,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "turn_id": "speech_64bc8d88e900",
+        "llm": {
+          "ttft": 0.784,
+          "duration": 2.028,
+          "prompt_tokens": 1728,
+          "completion_tokens": 125,
+          "tokens_per_second": 61.6,
+          "llm_calls": 2,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786040945.4073546,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "turn_id": "speech_64bc8d88e900",
+        "tts": {
+          "ttfb": 0.101,
+          "duration": 5.02,
+          "audio_duration": 26.657,
+          "model": "cartesia/sonic-3"
+        },
+        "total_response_latency": 1.261,
+        "degraded": false
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786040967.1502001,
+      "speech_id": "speech_64bc8d88e900",
+      "payload": {
+        "role": "agent",
+        "text": "The last turn took about seven hundred and thirty-eight milliseconds end to end. Turn detection was three hundred eighty-four milliseconds, the language model started responding in two hundred forty-five milliseconds, and the first audio byte was played in another one hundred nine milliseconds. So far in this call, the average response time per turn is the same, and the estimated cost is about one cent nine tenths of a cent. This includes around nineteen hundred prompt tokens and just under three hundred completion tokens. Let me know if you'd like me to explain any part of that in more detail.",
+        "final": true,
+        "turn_id": "speech_64bc8d88e900"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786040967.1502788,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786040967.1502957,
+      "payload": {
+        "llm_prompt_tokens": 3628,
+        "llm_completion_tokens": 423,
+        "stt_audio_seconds": 82.4,
+        "tts_characters": 1586,
+        "est_cost_usd": 0.0286
+      }
+    }
+  ],
+  "stored_at": 1786040995.67,
+  "source": "agent"
+}

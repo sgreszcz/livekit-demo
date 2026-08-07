@@ -1,0 +1,101 @@
+{
+  "call_id": "RM_QB89Efgz9fVg",
+  "meta": {
+    "call_id": "RM_QB89Efgz9fVg",
+    "room": "cockpit-rf4cJLdor3mvGe8d",
+    "started_at": 1786089131.2604864,
+    "pipeline": {
+      "stt": "deepgram/nova-3",
+      "llm": "openai/gpt-4.1-mini",
+      "tts": "cartesia/sonic-3"
+    },
+    "entry": "browser"
+  },
+  "ended_at": 1786093507.4566221,
+  "messages": [
+    {
+      "v": 1,
+      "type": "call_meta",
+      "ts": 1786089131.2604864,
+      "payload": {
+        "call_id": "RM_QB89Efgz9fVg",
+        "room": "cockpit-rf4cJLdor3mvGe8d",
+        "started_at": 1786089131.2604864,
+        "pipeline": {
+          "stt": "deepgram/nova-3",
+          "llm": "openai/gpt-4.1-mini",
+          "tts": "cartesia/sonic-3"
+        },
+        "entry": "browser"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786089131.6216173,
+      "payload": {
+        "state": "listening",
+        "prev": "initializing"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786089131.8302846,
+      "payload": {
+        "state": "speaking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786089133.7216895,
+      "speech_id": "speech_0b968c55b037",
+      "payload": {
+        "turn_id": "speech_0b968c55b037",
+        "tts": {
+          "ttfb": 0.175,
+          "duration": 2.067,
+          "audio_duration": 9.845,
+          "model": "cartesia/sonic-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786089141.762379,
+      "speech_id": "speech_0b968c55b037",
+      "payload": {
+        "role": "agent",
+        "text": "Welcome to Glass Cockpit. You're talking to a live LiveKit voice agent, and every measurement of this call — including this sentence — is streaming to the dashboard. Ask me anything, or ask how the call quality is.",
+        "final": true,
+        "turn_id": "speech_0b968c55b037"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786089141.7627075,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786089141.7627327,
+      "payload": {
+        "llm_prompt_tokens": 0,
+        "llm_completion_tokens": 0,
+        "stt_audio_seconds": 0,
+        "tts_characters": 214,
+        "est_cost_usd": 0.0021
+      }
+    }
+  ],
+  "stored_at": 1786093507.572,
+  "source": "agent"
+}

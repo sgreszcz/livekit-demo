@@ -24,7 +24,7 @@ import type {
   TurnPayload,
   UsagePayload,
 } from './schema';
-import { isEnvelope } from './schema';
+import { clampTranscriptText, isEnvelope } from './schema';
 
 export interface Turn {
   turnId: string;
@@ -432,7 +432,16 @@ export function reduceEnvelope(state: CockpitState, envelope: Envelope): Cockpit
 
     case 'transcript': {
       const { role, text, final, turn_id } = envelope.payload;
-      return upsertTranscript(base, ts, { turnId: turn_id, role, text, final });
+      // Truncated once, here, rather than at each render site: the transcript
+      // panel, a turn's drawer and anything added later all inherit the bound
+      // without having to remember it. An accepted line can still be long
+      // enough to cost a layout pass proportional to what was sent.
+      return upsertTranscript(base, ts, {
+        turnId: turn_id,
+        role,
+        text: clampTranscriptText(text),
+        final,
+      });
     }
 
     case 'state':

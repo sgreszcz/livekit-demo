@@ -152,6 +152,31 @@ function fireFrame(json: string, topic: string | undefined): void {
   lastRoom().fire('dataReceived', encoder.encode(json), undefined, undefined, topic);
 }
 
+/**
+ * A remote audio track and the element it attaches to.
+ *
+ * `muted` starts true here — the opposite of a real `<audio>` element's default
+ * — so that a session which never touches the property cannot pass the caller
+ * assertions by accident. Every expectation below is therefore about a value
+ * the session actually wrote.
+ */
+function fakeAudioTrack() {
+  const element = { autoplay: false, muted: true, remove: vi.fn() };
+  return {
+    element,
+    track: {
+      kind: 'audio',
+      attach: () => element as unknown as HTMLMediaElement,
+      detach: () => [element as unknown as HTMLMediaElement],
+    },
+  };
+}
+
+/** Delivers a subscribed remote audio track the way the SDK would. */
+function subscribe(track: unknown): void {
+  lastRoom().fire('trackSubscribed', track, {});
+}
+
 describe('CockpitSession.observe', () => {
   it('asks the Worker for a token scoped to the room being watched', async () => {
     await CockpitSession.observe('sip-cockpit-abc123', callbacks);
@@ -287,6 +312,133 @@ describe('CockpitSession.observe', () => {
 
     await expect(CockpitSession.observe('lobby', callbacks)).rejects.toThrow(/403/);
     expect(mocks.instances).toHaveLength(0);
+  });
+});
+
+/**
+ * Observer audio, which starts silent.
+ *
+ * The reason is acoustic and came out of real use: the watcher is usually the
+ * caller, laptop open next to the phone they are talking into, and laptop
+ * speakers into a phone microphone is an echo the agent hears too. So the
+ * feature under test is a negative one again — an observer session that makes
+ * no sound until asked — and the assertions that matter most are that the
+ * elements still exist (so unmuting is instant), and that none of this touches
+ * telemetry, which arrives on a data channel that has never had an opinion
+ * about audio.
+ */
+describe('CockpitSession observer audio', () => {
+  it('attaches remote audio muted, so watching your own call cannot echo', async () => {
+    await CockpitSession.observe('cockpit-demo01', callbacks);
+
+    const agent = fakeAudioTrack();
+    subscribe(agent.track);
+
+    expect(agent.element.muted).toBe(true);
+    // Attached and autoplaying, not skipped: the track stays subscribed and
+    // flowing so that unmuting is a property write rather than a renegotiation.
+    expect(agent.element.autoplay).toBe(true);
+  });
+
+  it('mutes every remote track, not just the agent', async () => {
+    // An observer subscribes to everyone in the room. The caller's own voice
+    // coming back out of the laptop is the louder half of the echo.
+    await CockpitSession.observe('cockpit-demo01', callbacks);
+
+    const agent = fakeAudioTrack();
+    const caller = fakeAudioTrack();
+    subscribe(agent.track);
+    subscribe(caller.track);
+
+    expect(agent.element.muted).toBe(true);
+    expect(caller.element.muted).toBe(true);
+  });
+
+  it('draws every instrument while muted — telemetry is a data channel', async () => {
+    await CockpitSession.observe('cockpit-demo01', callbacks);
+    subscribe(fakeAudioTrack().track);
+
+    fireFrame(JSON.stringify(ENVELOPE), 'cockpit');
+    expect(callbacks.onEnvelope).toHaveBeenCalledWith(ENVELOPE);
+  });
+
+  it('unmutes every element and asks the browser to lift its autoplay block', async () => {
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    const agent = fakeAudioTrack();
+    const caller = fakeAudioTrack();
+    subscribe(agent.track);
+    subscribe(caller.track);
+
+    // One from the join, which spends the freshest activation this page has.
+    expect(lastRoom().startAudio).toHaveBeenCalledTimes(1);
+
+    await session.setAudioMuted(false);
+
+    expect(agent.element.muted).toBe(false);
+    expect(caller.element.muted).toBe(false);
+    // Asked again under the gesture that pressed Listen: browsers differ on
+    // which activation they count, and this is the one they all accept.
+    expect(lastRoom().startAudio).toHaveBeenCalledTimes(2);
+  });
+
+  it('mutes again without asking the browser for anything', async () => {
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    const agent = fakeAudioTrack();
+    subscribe(agent.track);
+
+    await session.setAudioMuted(false);
+    await session.setAudioMuted(true);
+
+    expect(agent.element.muted).toBe(true);
+    // Going quiet needs no permission from anyone.
+    expect(lastRoom().startAudio).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives a track that arrives after Listen the state the visitor chose', async () => {
+    // Tracks arrive whenever a participant publishes one — an agent that
+    // republishes mid-call must not silently undo the button.
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    await session.setAudioMuted(false);
+
+    const late = fakeAudioTrack();
+    subscribe(late.track);
+
+    expect(late.element.muted).toBe(false);
+  });
+
+  it('unmutes even when the browser refuses to start audio', async () => {
+    // Strict mobile Safari again. The elements are unmuted regardless, because
+    // the refusal may be lifted by the very gesture that is being processed —
+    // and a rejection here would leave the button and the session disagreeing.
+    mocks.config.audioBlocked = true;
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    const agent = fakeAudioTrack();
+    subscribe(agent.track);
+
+    await expect(session.setAudioMuted(false)).resolves.toBeUndefined();
+    expect(agent.element.muted).toBe(false);
+  });
+
+  it('is allowed on an observer session, unlike everything else that changes state', async () => {
+    // The read-only rule is about the CALL. Muting your own speakers changes
+    // nothing anyone else can hear, which is exactly why a bystander may do it.
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    await expect(session.setAudioMuted(false)).resolves.toBeUndefined();
+    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/read-only/);
+  });
+
+  it('leaves a caller audible from the first frame', async () => {
+    // The regression that would matter: a caller whose agent audio arrived
+    // muted would be holding a silent phone call.
+    const session = await CockpitSession.connect(callbacks);
+
+    const agent = fakeAudioTrack();
+    subscribe(agent.track);
+
+    expect(agent.element.muted).toBe(false);
+    expect(agent.element.autoplay).toBe(true);
+
+    await session.disconnect();
   });
 });
 

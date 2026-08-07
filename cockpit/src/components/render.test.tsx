@@ -23,11 +23,12 @@ import {
   callLength,
   latencyValue,
 } from './FleetCharts';
+import { ObserverBar } from './ObserverBar';
 import { Tabs } from './Tabs';
 import { StateStrip, stateBreakdown } from './StateStrip';
 import { TransportLamp, TransportPanel } from './TransportPanel';
 import { TurnDetail } from './TurnDetail';
-import { Waterfall, axisScale } from './Waterfall';
+import { MAX_AXIS_TICKS, MAX_WATERFALL_ROWS, Waterfall, axisScale, tickStep } from './Waterfall';
 import fixture from '../fixtures/sample-call.jsonl?raw';
 import type { CallMetaPayload, ChaosInjections } from '../telemetry/schema';
 import {
@@ -776,5 +777,128 @@ describe('FleetCharts', () => {
     expect(latencyValue(null)).toBe('—');
     expect(latencyValue(1810)).toBe('1,810');
     expect(latencyValue(0)).toBe('0');
+  });
+});
+
+/**
+ * Amplification: how much drawing one small envelope can demand.
+ *
+ * A stored debrief is fetched by an id anyone can paste into a link, so the
+ * question is not what a real call produces but what a crafted one can. Two
+ * paths turn a tiny input into a large amount of DOM — the axis, whose tick loop
+ * follows the longest turn, and the row list, which follows the turn count — and
+ * both are rebuilt on every resize frame.
+ */
+describe('Waterfall — bounded drawing', () => {
+  const bareTurn: Turn = {
+    turnId: 't1',
+    index: 0,
+    degraded: false,
+    interruptions: [],
+    firstTs: 0,
+    lastTs: 0,
+  };
+
+  it('keeps the ordinary axis exactly as readable as it was', () => {
+    // The clamp must cost a well-formed call nothing: a normal scale still gets
+    // its half-second, one-second and two-second steps.
+    expect(tickStep(1.5)).toBe(0.5);
+    expect(tickStep(2.5)).toBe(0.5);
+    expect(tickStep(4)).toBe(1);
+    expect(tickStep(6)).toBe(1);
+    expect(tickStep(10)).toBe(2);
+  });
+
+  it('bounds the tick count however long a turn claims to be', () => {
+    // One 120-byte turn envelope claiming an hour of latency used to produce
+    // about 1800 ticks — a group, a line and a label each — rebuilt on every
+    // frame of a window drag.
+    for (const scale of [1.5, 3, 12, 60, 600, 3600]) {
+      const step = tickStep(scale);
+      expect(step).toBeGreaterThan(0);
+      expect(Math.floor(scale / step) + 1).toBeLessThanOrEqual(MAX_AXIS_TICKS + 1);
+    }
+  });
+
+  it('follows the schema ceiling: the worst legal turn is still bounded', () => {
+    // `isDuration` admits an hour, so that is the worst axis a valid envelope
+    // can ask for. The two bounds have to agree, and this is where they meet.
+    const worst = axisScale([turnWaterfall({ ...bareTurn, totalResponseLatency: 3600 })]);
+    expect(Math.floor(worst / tickStep(worst)) + 1).toBeLessThanOrEqual(MAX_AXIS_TICKS + 1);
+  });
+
+  it('draws a bounded number of rows and says how many it left out', () => {
+    const many: Turn[] = Array.from({ length: MAX_WATERFALL_ROWS + 40 }, (_, index) => ({
+      ...bareTurn,
+      turnId: `t${index}`,
+      index,
+    }));
+    const markup = renderToStaticMarkup(<Waterfall turns={many} />);
+
+    expect(markup.match(/wf-row--turn/g) ?? []).toHaveLength(MAX_WATERFALL_ROWS);
+    // Said out loud rather than silently truncated — an instrument that quietly
+    // drops readings is worse than one that admits the limit.
+    expect(markup).toContain('40 more');
+    assertRenders(markup);
+  });
+
+  it('says nothing about limits for a call that fits', () => {
+    const markup = renderToStaticMarkup(<Waterfall turns={fixtureState.turns} />);
+    expect(markup).not.toContain('more in this recording');
+  });
+});
+
+/**
+ * The observer bar, which is two promises at once: that the page will not make
+ * a sound until asked, and that it is honest about what it is showing.
+ */
+describe('ObserverBar', () => {
+  it('offers to start audio, and explains why it has not', () => {
+    const markup = renderToStaticMarkup(
+      <ObserverBar listening={false} onToggle={() => {}} onStop={() => {}} />,
+    );
+    assertRenders(markup);
+    expect(markup).toContain('Listen');
+    expect(markup).toContain('audio muted to prevent echo');
+    // Prominent: the filled control, because silence was a decision the visitor
+    // did not make and cannot otherwise guess at.
+    expect(markup).toContain('btn--primary');
+  });
+
+  it('offers to stop it again, and inverts the advice', () => {
+    const markup = renderToStaticMarkup(
+      <ObserverBar listening onToggle={() => {}} onStop={() => {}} />,
+    );
+    assertRenders(markup);
+    expect(markup).toContain('Mute audio');
+    expect(markup).toContain('audio on');
+    expect(markup).not.toContain('muted to prevent echo');
+  });
+
+  it('says what the page is, in one line, in both states', () => {
+    // Muting is an echo fix, not a consent mechanism — the transcript and every
+    // instrument stream whatever the speakers are doing — so the read-only
+    // framing cannot be conditional on the audio. One calm line, no dialog:
+    // this is a demo, and nothing may stand between a visitor and the
+    // instruments.
+    for (const listening of [false, true]) {
+      const markup = renderToStaticMarkup(
+        <ObserverBar listening={listening} onToggle={() => {}} onStop={() => {}} />,
+      );
+      expect(markup).toContain('Read-only view of a live call');
+    }
+  });
+
+  it('makes no claim about what callers were told', () => {
+    // The spoken greeting does not say the call may be watched, so the page
+    // must not say that it does. A disclosure that overstates is worse than
+    // none, because it is the part a reader would rely on.
+    for (const listening of [false, true]) {
+      const markup = renderToStaticMarkup(
+        <ObserverBar listening={listening} onToggle={() => {}} onStop={() => {}} />,
+      );
+      expect(markup).not.toContain('told at the start');
+      expect(markup).not.toContain('are notified');
+    }
   });
 });

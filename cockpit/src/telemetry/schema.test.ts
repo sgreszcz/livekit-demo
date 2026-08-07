@@ -7,8 +7,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { MAX_LLM_CHAIN_LINKS, isEnvelope } from './schema';
-import { parseEnvelopeLines } from './store';
+import {
+  MAX_IDENTIFIER_CHARS,
+  MAX_LLM_CHAIN_LINKS,
+  MAX_RENDERED_TRANSCRIPT_CHARS,
+  MAX_TRANSCRIPT_CHARS,
+  clampTranscriptText,
+  isEnvelope,
+} from './schema';
+import { parseEnvelopeLines, reduceAll } from './store';
 
 const validTurn = {
   v: 1,
@@ -422,5 +429,184 @@ describe('parseEnvelopeLines', () => {
       ].join('\n'),
     );
     expect(parsed.map((envelope) => envelope.type)).toEqual(['turn', 'state']);
+  });
+});
+
+/**
+ * The magnitudes a finiteness check lets through.
+ *
+ * `Number.isFinite` rejects NaN and Infinity, which is where this file started,
+ * but `1.7e308` is a perfectly finite double — and the store subtracts one
+ * timestamp from another. Two finite values at opposite ends of the range
+ * subtract to Infinity, which reaches the page as "Infinitym" and "NaNs" on an
+ * instrument panel whose stated rule is that neither may ever be printed. A
+ * debrief is fetched by an id anyone can paste into a link, so this is not a
+ * theoretical reachability argument.
+ */
+describe('isEnvelope — bounds, not just finiteness', () => {
+  const stateEnvelope = (ts: unknown) => ({
+    v: 1,
+    type: 'state',
+    ts,
+    payload: { state: 'listening' },
+  });
+
+  it('accepts the timestamps a real call produces', () => {
+    expect(isEnvelope(stateEnvelope(1723000014.7))).toBe(true);
+    // Fixtures and tests legitimately count from zero.
+    expect(isEnvelope(stateEnvelope(0))).toBe(true);
+  });
+
+  it('rejects a timestamp large enough to overflow the call duration', () => {
+    for (const ts of [1.7e308, 1e300, 8e9 * 1e3]) {
+      expect(isEnvelope(stateEnvelope(ts))).toBe(false);
+    }
+  });
+
+  it('rejects a timestamp before the epoch, which would reverse the axis', () => {
+    expect(isEnvelope(stateEnvelope(-1))).toBe(false);
+    expect(isEnvelope(stateEnvelope(-1e308))).toBe(false);
+  });
+
+  it('rejects a call_meta whose start time is out of range', () => {
+    const meta = (started_at: number) => ({
+      v: 1,
+      type: 'call_meta',
+      ts: 1,
+      payload: {
+        call_id: 'c1',
+        room: 'cockpit-demo01',
+        started_at,
+        pipeline: { stt: 'a', llm: 'b', tts: 'c' },
+        entry: 'sip',
+      },
+    });
+    expect(isEnvelope(meta(1723000000))).toBe(true);
+    expect(isEnvelope(meta(1.7e308))).toBe(false);
+    expect(isEnvelope(meta(-1))).toBe(false);
+  });
+
+  it('rejects a running cost no voice demo could incur', () => {
+    const usage = (est_cost_usd: number) => ({
+      v: 1,
+      type: 'usage',
+      ts: 1,
+      payload: {
+        llm_prompt_tokens: 10,
+        llm_completion_tokens: 10,
+        stt_audio_seconds: 1,
+        tts_characters: 10,
+        est_cost_usd,
+      },
+    });
+    expect(isEnvelope(usage(0.0042))).toBe(true);
+    // Not NaN and not Infinity — just a number wide enough to shoulder the
+    // cost ledger apart, which is the same bug wearing a different hat.
+    expect(isEnvelope(usage(9e15))).toBe(false);
+  });
+
+  it('rejects token counts past anything a call could accumulate', () => {
+    const usage = (llm_prompt_tokens: number) => ({
+      v: 1,
+      type: 'usage',
+      ts: 1,
+      payload: {
+        llm_prompt_tokens,
+        llm_completion_tokens: 10,
+        stt_audio_seconds: 1,
+        tts_characters: 10,
+        est_cost_usd: 0.01,
+      },
+    });
+    expect(isEnvelope(usage(820))).toBe(true);
+    expect(isEnvelope(usage(Number.MAX_SAFE_INTEGER))).toBe(false);
+  });
+
+  it('rejects an injected delay that is not a delay', () => {
+    const chaos = (llm_delay_ms: number) => ({
+      v: 1,
+      type: 'chaos',
+      ts: 1,
+      payload: { llm_delay_ms, active: true },
+    });
+    expect(isEnvelope(chaos(800))).toBe(true);
+    expect(isEnvelope(chaos(1e15))).toBe(false);
+  });
+});
+
+/**
+ * String length, which `typeof value === 'string'` says nothing about.
+ *
+ * Identifiers reach the page as chips, placards and React keys; a quarter of a
+ * megabyte in a field rendered inside a fixed gutter is a layout weapon, not a
+ * model name. Transcript text is the one field where length is legitimately
+ * content, so it is bounded far more generously and truncated for display
+ * rather than rejected — losing a long line loses information, and rendering
+ * all of it costs a layout pass proportional to whatever was sent.
+ */
+describe('isEnvelope — string bounds', () => {
+  const transcript = (text: string, turn_id = 't1') => ({
+    v: 1,
+    type: 'transcript',
+    ts: 1,
+    payload: { role: 'user', text, final: true, turn_id },
+  });
+
+  it('accepts an ordinary utterance', () => {
+    expect(isEnvelope(transcript('I would like to book a table for four.'))).toBe(true);
+  });
+
+  it('accepts a long but plausible transcript line', () => {
+    expect(isEnvelope(transcript('x'.repeat(MAX_RENDERED_TRANSCRIPT_CHARS + 1)))).toBe(true);
+  });
+
+  it('rejects a transcript line that is an attack rather than an utterance', () => {
+    expect(isEnvelope(transcript('x'.repeat(MAX_TRANSCRIPT_CHARS))).valueOf()).toBe(true);
+    expect(isEnvelope(transcript('x'.repeat(MAX_TRANSCRIPT_CHARS + 1)))).toBe(false);
+  });
+
+  it('rejects an identifier long enough to break the layout it renders in', () => {
+    expect(isEnvelope(transcript('hello', 'x'.repeat(MAX_IDENTIFIER_CHARS)))).toBe(true);
+    expect(isEnvelope(transcript('hello', 'x'.repeat(MAX_IDENTIFIER_CHARS + 1)))).toBe(false);
+  });
+
+  it('rejects an oversized model name, which renders in a chip', () => {
+    expect(
+      isEnvelope({
+        v: 1,
+        type: 'turn',
+        ts: 1,
+        payload: {
+          turn_id: 't1',
+          stt: { duration: 0.1, audio_duration: 1, model: 'x'.repeat(500) },
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('clampTranscriptText', () => {
+  it('leaves an ordinary line exactly as it was', () => {
+    expect(clampTranscriptText('a table for four, please')).toBe('a table for four, please');
+  });
+
+  it('cuts a long line and says that it did', () => {
+    const clamped = clampTranscriptText('x'.repeat(MAX_TRANSCRIPT_CHARS));
+    // The ellipsis is the honest part: the line was cut, not ended.
+    expect(clamped).toHaveLength(MAX_RENDERED_TRANSCRIPT_CHARS + 1);
+    expect(clamped.endsWith('…')).toBe(true);
+  });
+
+  it('is what the store applies, so no renderer has to remember to', () => {
+    const [envelope] = parseEnvelopeLines(
+      JSON.stringify({
+        v: 1,
+        type: 'transcript',
+        ts: 1,
+        payload: { role: 'user', text: 'y'.repeat(MAX_TRANSCRIPT_CHARS), final: true, turn_id: 't1' },
+      }),
+    );
+    const state = reduceAll([envelope]);
+    expect(state.transcript[0].text).toHaveLength(MAX_RENDERED_TRANSCRIPT_CHARS + 1);
   });
 });

@@ -1,0 +1,414 @@
+{
+  "call_id": "RM_RcNh3a662vxm",
+  "meta": {
+    "call_id": "RM_RcNh3a662vxm",
+    "room": "sip-cockpit-_+447700900123_BXhCPPSrr57t",
+    "started_at": 1786086040.7426062,
+    "pipeline": {
+      "stt": "deepgram/nova-3",
+      "llm": "openai/gpt-4.1-mini",
+      "tts": "cartesia/sonic-3"
+    },
+    "entry": "sip"
+  },
+  "ended_at": 1786086141.9169877,
+  "messages": [
+    {
+      "v": 1,
+      "type": "call_meta",
+      "ts": 1786086040.7426062,
+      "payload": {
+        "call_id": "RM_RcNh3a662vxm",
+        "room": "sip-cockpit-_+447700900123_BXhCPPSrr57t",
+        "started_at": 1786086040.7426062,
+        "pipeline": {
+          "stt": "deepgram/nova-3",
+          "llm": "openai/gpt-4.1-mini",
+          "tts": "cartesia/sonic-3"
+        },
+        "entry": "sip"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086041.0989177,
+      "payload": {
+        "state": "listening",
+        "prev": "initializing"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086041.5643961,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086042.0260613,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086042.6180303,
+      "speech_id": "speech_013392dc4bdc",
+      "payload": {
+        "turn_id": "speech_013392dc4bdc",
+        "llm": {
+          "ttft": 0.711,
+          "duration": 1.506,
+          "prompt_tokens": 577,
+          "completion_tokens": 73,
+          "tokens_per_second": 48.5,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086045.9301705,
+      "speech_id": "speech_013392dc4bdc",
+      "payload": {
+        "turn_id": "speech_013392dc4bdc",
+        "tts": {
+          "ttfb": 0.11,
+          "duration": 4.015,
+          "audio_duration": 19.087,
+          "model": "cartesia/sonic-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786086061.1436408,
+      "speech_id": "speech_013392dc4bdc",
+      "payload": {
+        "role": "agent",
+        "text": "Hello and welcome to Glass Cockpit. You're viewing a live dashboard that shows every measurement of this conversation in real time, including speech recognition, response generation, synthesis, and the cost estimate for each turn. Feel free to ask me about any of the numbers you see or to try out chaos mode to simulate latency effects. What would you like to explore first?",
+        "final": true,
+        "turn_id": "speech_013392dc4bdc"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086061.1438606,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786086061.1438854,
+      "payload": {
+        "llm_prompt_tokens": 577,
+        "llm_completion_tokens": 73,
+        "stt_audio_seconds": 19,
+        "tts_characters": 375,
+        "est_cost_usd": 0.0065
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786086067.5789788,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "role": "user",
+        "text": "Tell me your current statistics and how this call is going.",
+        "final": true,
+        "turn_id": "speech_d697f7685614"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086067.5789788,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "turn_id": "speech_d697f7685614",
+        "eou": {
+          "end_of_utterance_delay": 0.374,
+          "transcription_delay": 0.186
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086067.5789788,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "turn_id": "speech_d697f7685614",
+        "stt": {
+          "duration": 0,
+          "audio_duration": 25.75,
+          "model": "deepgram/nova-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086067.5825677,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086070.4544563,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "turn_id": "speech_d697f7685614",
+        "llm": {
+          "ttft": 3.042,
+          "duration": 3.061,
+          "prompt_tokens": 669,
+          "completion_tokens": 11,
+          "tokens_per_second": 3.6,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086072.4611585,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086072.8438294,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "turn_id": "speech_d697f7685614",
+        "llm": {
+          "ttft": 4.864,
+          "duration": 5.446,
+          "prompt_tokens": 1382,
+          "completion_tokens": 60,
+          "tokens_per_second": 11,
+          "llm_calls": 2,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086074.0811312,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "turn_id": "speech_d697f7685614",
+        "tts": {
+          "ttfb": 0.101,
+          "duration": 1.721,
+          "audio_duration": 9.845,
+          "model": "cartesia/sonic-3"
+        },
+        "total_response_latency": 5.339,
+        "degraded": false
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786086082.3104486,
+      "speech_id": "speech_d697f7685614",
+      "payload": {
+        "role": "agent",
+        "text": "I haven't completed a full turn yet, so there are no performance metrics available to share just yet. Please ask me again after your next question, and I can provide you with the current latency, interruption, and cost details for this call.",
+        "final": true,
+        "turn_id": "speech_d697f7685614"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086082.3107054,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786086082.3107374,
+      "payload": {
+        "llm_prompt_tokens": 1959,
+        "llm_completion_tokens": 133,
+        "stt_audio_seconds": 38.3,
+        "tts_characters": 616,
+        "est_cost_usd": 0.0121
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786086087.4790106,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "role": "user",
+        "text": "Okay. Let me know already. I wanna see if you have those, uh, metrics already.",
+        "final": true,
+        "turn_id": "speech_e0b1cfd9dad3"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086087.4790106,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "turn_id": "speech_e0b1cfd9dad3",
+        "eou": {
+          "end_of_utterance_delay": 0.372,
+          "transcription_delay": 0.142
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086087.4790106,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "turn_id": "speech_e0b1cfd9dad3",
+        "stt": {
+          "duration": 0,
+          "audio_duration": 19.85,
+          "model": "deepgram/nova-3"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086087.486239,
+      "payload": {
+        "state": "thinking",
+        "prev": "listening"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086087.975369,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "turn_id": "speech_e0b1cfd9dad3",
+        "llm": {
+          "ttft": 0.7,
+          "duration": 0.723,
+          "prompt_tokens": 789,
+          "completion_tokens": 11,
+          "tokens_per_second": 15.2,
+          "llm_calls": 1,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086088.833435,
+      "payload": {
+        "state": "speaking",
+        "prev": "thinking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086090.1740448,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "turn_id": "speech_e0b1cfd9dad3",
+        "llm": {
+          "ttft": 1.081,
+          "duration": 2.917,
+          "prompt_tokens": 1677,
+          "completion_tokens": 119,
+          "tokens_per_second": 40.8,
+          "llm_calls": 2,
+          "model": "openai/gpt-4.1-mini"
+        }
+      }
+    },
+    {
+      "v": 1,
+      "type": "turn",
+      "ts": 1786086094.3729594,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "turn_id": "speech_e0b1cfd9dad3",
+        "tts": {
+          "ttfb": 0.108,
+          "duration": 5.648,
+          "audio_duration": 26.657,
+          "model": "cartesia/sonic-3"
+        },
+        "total_response_latency": 1.561,
+        "degraded": false
+      }
+    },
+    {
+      "v": 1,
+      "type": "transcript",
+      "ts": 1786086115.493685,
+      "speech_id": "speech_e0b1cfd9dad3",
+      "payload": {
+        "role": "agent",
+        "text": "The last turn took about five and a third seconds from end to end. Turn detection accounted for nearly four-tenths of a second, the language model beginning its response took just under four-point-nine seconds, and speech synthesis started delivering audio after about one tenth of a second past that. This is the average across one completed turn. Estimated running cost so far is about thirteen thousandths of a dollar, with one thousand nine hundred fifty-nine prompt tokens and one hundred thirty-three completion tokens used. This estimate is not a final bill.",
+        "final": true,
+        "turn_id": "speech_e0b1cfd9dad3"
+      }
+    },
+    {
+      "v": 1,
+      "type": "state",
+      "ts": 1786086115.4939642,
+      "payload": {
+        "state": "listening",
+        "prev": "speaking"
+      }
+    },
+    {
+      "v": 1,
+      "type": "usage",
+      "ts": 1786086115.4939837,
+      "payload": {
+        "llm_prompt_tokens": 3636,
+        "llm_completion_tokens": 252,
+        "stt_audio_seconds": 73.35,
+        "tts_characters": 1181,
+        "est_cost_usd": 0.0231
+      }
+    }
+  ],
+  "stored_at": 1786086142.007,
+  "source": "agent"
+}

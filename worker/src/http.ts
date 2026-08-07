@@ -5,6 +5,11 @@ export function json(body: unknown, init: ResponseInit = {}): Response {
     ...init,
     headers: {
       'content-type': 'application/json; charset=utf-8',
+      // Every route here answers JSON and none of it is ever meant to be
+      // interpreted as anything else. Declared once, centrally, so a new route
+      // cannot forget it. Routes that need more (a share link's `no-store`, the
+      // metrics endpoint's CORS) add it themselves.
+      'x-content-type-options': 'nosniff',
       ...init.headers,
     },
   });
@@ -12,6 +17,29 @@ export function json(body: unknown, init: ResponseInit = {}): Response {
 
 export function error(status: number, message: string): Response {
   return json({ error: message }, { status });
+}
+
+/**
+ * 405 with the `Allow` header the status is meaningless without.
+ *
+ * A 405 that does not say what IS allowed tells a client only that it is wrong,
+ * and RFC 9110 makes the header mandatory for exactly that reason.
+ */
+export function methodNotAllowed(...allowed: string[]): Response {
+  return json(
+    { error: `Use ${allowed.join(' or ')}` },
+    { status: 405, headers: { allow: allowed.join(', ') } },
+  );
+}
+
+/**
+ * 429 with `Retry-After`, so a client can back off instead of guessing.
+ */
+export function tooManyRequests(retryAfter: number): Response {
+  return json(
+    { error: 'Too many requests — slow down and try again shortly' },
+    { status: 429, headers: { 'retry-after': String(retryAfter) } },
+  );
 }
 
 const BASE62 = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';

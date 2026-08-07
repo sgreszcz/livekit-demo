@@ -104,7 +104,7 @@ describe('parseActiveResponse', () => {
       rooms: [
         { room: 'lobby', entry: 'sip', num_participants: 1, created_at: 1 },
         { room: 'cockpit-a b', entry: 'sip', num_participants: 1, created_at: 1 },
-        { room: `cockpit-${'a'.repeat(41)}`, entry: 'sip', num_participants: 1, created_at: 1 },
+        { room: `cockpit-${'a'.repeat(61)}`, entry: 'sip', num_participants: 1, created_at: 1 },
         PAYLOAD.rooms[1],
       ],
     });
@@ -264,4 +264,36 @@ describe('fetchActiveRooms', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     await expect(fetchActiveRooms()).resolves.toBeNull();
   });
+});
+
+/**
+ * SIP dispatch embeds the caller's number in the room name, so this shape is
+ * the one that matters most and the one a stricter pattern would silently drop.
+ *
+ * The number is from Ofcom's drama range (07700 900xxx), which is reserved so
+ * that it can never route to a real subscriber. That is not fastidiousness: a
+ * room name is a caller's phone number, this file is a git object forever, and a
+ * fixture taken from a real call would publish somebody's mobile in a public
+ * repository. Anything that needs a phone number here comes from that range.
+ */
+const DRAMA_SIP_ROOM = 'sip-cockpit-_+447700900123_5xzppVvwo6Px';
+
+it('accepts a real SIP room name — caller number embedded with _ and +', () => {
+  const snapshot = parseActiveResponse(
+    {
+      rooms: [
+        {
+          room: DRAMA_SIP_ROOM,
+          entry: 'sip',
+          num_participants: 2,
+          created_at: 1786098222,
+        },
+      ],
+      degraded: false,
+      generated_at: 1786098358,
+    },
+    1786098358_000,
+  );
+  expect(snapshot?.rooms).toHaveLength(1);
+  expect(isObservableRoom(DRAMA_SIP_ROOM)).toBe(true);
 });

@@ -15,6 +15,7 @@ import {
   aggregate,
   collectMetrics,
   handleMetricsGet,
+  dedupe,
   percentile,
   resetMetricsMemo,
   summariseCall,
@@ -43,6 +44,14 @@ interface TurnSpec {
  * A debrief in the emission order the agent produces: partial turn envelopes
  * that merge by id, a running-total usage envelope after every turn.
  */
+/**
+ * Distinct by default. Records are folded by `call_id` before aggregation, so a
+ * fixture helper that stamped every call with the same id would silently make
+ * every multi-call test a one-call test — tests that pass for the wrong reason.
+ * A test that wants two records of the SAME call passes `call_id` explicitly.
+ */
+let nextCallId = 0;
+
 function debrief(options: {
   turns?: TurnSpec[];
   entry?: string;
@@ -50,12 +59,17 @@ function debrief(options: {
   started_at?: number;
   ended_at?: number;
   cost_per_turn?: number;
+  call_id?: string;
+  in_progress?: boolean;
+  stored_at?: number;
+  room?: string;
 }): string {
   const turns = options.turns ?? [];
+  const call_id = options.call_id ?? `RM_${(nextCallId += 1)}`;
   const messages: unknown[] = [
     envelope('call_meta', {
-      call_id: 'RM_x',
-      room: 'cockpit-x',
+      call_id,
+      room: options.room ?? 'cockpit-x',
       started_at: options.started_at ?? 1723000000,
       pipeline: { stt: 's', llm: 'l', tts: 't' },
       entry: options.entry ?? 'browser',
@@ -99,12 +113,13 @@ function debrief(options: {
   }
 
   return JSON.stringify({
-    call_id: 'RM_x',
+    call_id,
     meta: messages[0] && (messages[0] as { payload: unknown }).payload,
     ended_at: options.ended_at ?? 1723000100,
     messages,
-    stored_at: options.ended_at ?? 1723000100,
+    stored_at: options.stored_at ?? options.ended_at ?? 1723000100,
     source: options.source ?? 'agent',
+    in_progress: options.in_progress ?? false,
   });
 }
 
@@ -335,13 +350,15 @@ describe('aggregate: call splits and history', () => {
   });
 
   it('averages call duration and skips nonsense clocks', () => {
+    const talked = [{ id: 't1', total: 0.5 }];
     const result = metrics([
-      debrief({ started_at: 1000, ended_at: 1060 }),
-      debrief({ started_at: 1000, ended_at: 1120 }),
+      debrief({ turns: talked, started_at: 1000, ended_at: 1060 }),
+      debrief({ turns: talked, started_at: 1000, ended_at: 1120 }),
       // ended_at before started_at: a clock problem, not a -60 s call.
-      debrief({ started_at: 2000, ended_at: 1940 }),
+      debrief({ turns: talked, started_at: 2000, ended_at: 1940 }),
     ]);
     expect(result.avg_call_seconds).toBe(90);
+    expect(result.calls_averaged).toBe(2);
   });
 });
 
@@ -526,5 +543,149 @@ describe('handleMetricsGet', () => {
     await handleMetricsGet(fake.env);
     expect(fake.lists).toBe(2);
     expect(MEMO_MS).toBe(60 * SECOND);
+  });
+});
+
+describe('dedupe: one call, several stored records', () => {
+  it('folds a checkpoint into the final debrief of the same call', () => {
+    // The agent checkpoints while the call runs and POSTs a final debrief when
+    // it ends. The final POST deletes the checkpoint, but KV list is eventually
+    // consistent and keeps returning the deleted key for a while, so both
+    // records are routinely read in the same scrape.
+    const calls = [
+      debrief({ call_id: 'RM_same', in_progress: true, stored_at: 10, turns: [{ id: 't1', total: 0.5 }] }),
+      debrief({ call_id: 'RM_same', in_progress: false, stored_at: 20, turns: [{ id: 't1', total: 0.5 }, { id: 't2', total: 0.7 }] }),
+    ].map((body) => summariseCall(body)!);
+
+    const folded = dedupe(calls);
+    expect(folded).toHaveLength(1);
+    // The finished record wins, so the call reports both of its turns.
+    expect(folded[0].in_progress).toBe(false);
+    expect(folded[0].turns).toBe(2);
+  });
+
+  it('prefers the finished record even when the checkpoint was written later', () => {
+    // Clock skew between the checkpoint and the final POST must not resurrect
+    // a call that has already ended.
+    const calls = [
+      debrief({ call_id: 'RM_same', in_progress: false, stored_at: 10 }),
+      debrief({ call_id: 'RM_same', in_progress: true, stored_at: 99 }),
+    ].map((body) => summariseCall(body)!);
+    expect(dedupe(calls)).toHaveLength(1);
+    expect(dedupe(calls)[0].in_progress).toBe(false);
+  });
+
+  it('keeps the newest of two checkpoints for a call still running', () => {
+    const calls = [
+      debrief({ call_id: 'RM_live', in_progress: true, stored_at: 10, turns: [{ id: 't1', total: 0.5 }] }),
+      debrief({ call_id: 'RM_live', in_progress: true, stored_at: 40, turns: [{ id: 't1', total: 0.5 }, { id: 't2', total: 0.6 }] }),
+    ].map((body) => summariseCall(body)!);
+    const folded = dedupe(calls);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].turns).toBe(2);
+  });
+
+  it('folds records with no call_id with nothing', () => {
+    // Two anonymous records are two calls as far as anyone can prove.
+    const body = JSON.stringify({ messages: [envelope('state', { state: 'listening' })], source: 'agent' });
+    const calls = [summariseCall(body)!, summariseCall(body)!];
+    expect(dedupe(calls)).toHaveLength(2);
+  });
+
+  it('folds checkpoints out of the fleet count end to end', async () => {
+    const { env } = fakeEnv([
+      { name: 'chk_abc', stored_at: 10, value: debrief({ call_id: 'RM_1', in_progress: true }) },
+      { name: 'sharedid', stored_at: 20, value: debrief({ call_id: 'RM_1', in_progress: false }) },
+      { name: 'chk_def', stored_at: 30, value: debrief({ call_id: 'RM_2', in_progress: true }) },
+    ]);
+    const result = await collectMetrics(env);
+    expect(result.calls_total).toBe(2);
+    expect(result.calls_in_progress).toBe(1);
+    expect(result.calls_completed).toBe(1);
+  });
+});
+
+describe('aggregate: calls in progress', () => {
+  it('counts a live call but keeps it out of the quality numbers', () => {
+    const result = metrics([
+      debrief({ in_progress: false, started_at: 1000, ended_at: 1060, turns: [{ id: 'a', total: 0.5 }] }),
+      // Live: two fast turns so far. If it were averaged in it would drag p95
+      // down and invent a 60-second "duration" for a call still running.
+      debrief({ in_progress: true, started_at: 1000, ended_at: 1060, turns: [{ id: 'b', total: 0.1 }, { id: 'c', total: 0.1 }] }),
+    ]);
+
+    expect(result.calls_total).toBe(2);
+    expect(result.calls_in_progress).toBe(1);
+    expect(result.calls_completed).toBe(1);
+    // Volume counts everything…
+    expect(result.turns_total).toBe(3);
+    // …quality describes the finished call only.
+    expect(result.latency_count).toBe(1);
+    expect(result.latency_p50_ms).toBe(500);
+    expect(result.calls_averaged).toBe(1);
+    expect(result.avg_call_seconds).toBe(60);
+  });
+});
+
+describe('collectMetrics: only the agent moves the numbers', () => {
+  it('stores but never aggregates an anonymous debrief', async () => {
+    // Absent CORS headers do not stop a cross-site no-CORS POST, so anyone can
+    // put a record in KV. `source` is set by the Worker from a verified bearer
+    // token, never by the body, so this is a real trust boundary.
+    const { env } = fakeEnv([
+      { name: 'real', stored_at: 2, value: debrief({ source: 'agent', turns: [{ id: 't', total: 0.5 }] }) },
+      { name: 'forged', stored_at: 1, value: debrief({ source: 'browser', turns: [{ id: 't', total: 99 }], cost_per_turn: 1000 }) },
+    ]);
+    const result = await collectMetrics(env);
+    expect(result.calls_total).toBe(1);
+    expect(result.calls_untrusted).toBe(1);
+    expect(result.latency_count).toBe(1);
+    expect(result.latency_max_ms).toBe(500);
+    expect(result.est_cost_usd).toBe(0.001);
+  });
+});
+
+describe('aggregate: numbers that are finite but not real', () => {
+  it('drops magnitudes that would sum to Infinity', () => {
+    // 1e308 is finite, so `Number.isFinite` accepts it; two of them sum to
+    // Infinity, which JSON.stringify emits as null and which breaks every panel
+    // bound to the field.
+    const poisoned = JSON.stringify({
+      call_id: 'RM_poison',
+      meta: { started_at: 1000, entry: 'browser' },
+      ended_at: 1060,
+      stored_at: 1060,
+      source: 'agent',
+      messages: [
+        envelope('turn', { turn_id: 't', total_response_latency: 1e308, degraded: false }),
+        envelope('usage', {
+          llm_prompt_tokens: 1e308,
+          llm_completion_tokens: 1e308,
+          stt_audio_seconds: 1e308,
+          tts_characters: 1e308,
+          est_cost_usd: 1e308,
+        }),
+      ],
+    });
+
+    const result = metrics([poisoned, poisoned]);
+    expect(result.est_cost_usd).toBe(0);
+    expect(result.tokens_prompt).toBe(0);
+    expect(result.tokens_completion).toBe(0);
+    expect(result.stt_seconds).toBe(0);
+    expect(result.tts_characters).toBe(0);
+    // The turn had no usable latency, so it is not a completed turn.
+    expect(result.latency_count).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('null');
+  });
+
+  it('drops a duration longer than any credible call', () => {
+    // A day-long "call" is a clock problem. Note the envelope timestamps are far
+    // in the past here, so the idle-tail trim cannot rescue it either.
+    const result = metrics([
+      debrief({ turns: [{ id: 't', total: 0.5 }], started_at: 1000, ended_at: 1000 + 86400 }),
+    ]);
+    expect(result.calls_averaged).toBe(0);
+    expect(result.avg_call_seconds).toBe(0);
   });
 });

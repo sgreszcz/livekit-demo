@@ -51,10 +51,37 @@ export function axisScale(rows: TurnWaterfall[]): number {
   return Math.max(Math.ceil(Math.max(longest, LATENCY_BUDGET_SECONDS * 1.6) * 2) / 2, 1.5);
 }
 
-function tickStep(scale: number): number {
-  if (scale <= 2.5) return 0.5;
-  if (scale <= 6) return 1;
-  return 2;
+/**
+ * The most a hostile debrief may make this instrument draw.
+ *
+ * The axis is where a tiny input becomes a large amount of DOM: the tick loop
+ * ran to `scale`, and `scale` follows the longest turn, which the schema bounds
+ * at an hour. One 120-byte turn envelope claiming a 3600-second latency
+ * therefore produced ~1800 ticks — each a group, a line and a label — and the
+ * whole set was rebuilt on every frame of a window resize.
+ *
+ * Twenty-four is also simply the most an axis can label legibly, so the clamp
+ * costs a well-formed call nothing at all.
+ */
+export const MAX_AXIS_TICKS = 24;
+
+/**
+ * The most rows drawn, for the same reason and from the same threat: the
+ * envelope log admits thousands of turns, and every one of them is a row.
+ * Beyond this the waterfall has stopped being readable anyway, so the excess is
+ * dropped with a line saying so rather than silently.
+ */
+export const MAX_WATERFALL_ROWS = 200;
+
+/**
+ * A readable step for ordinary axes, widened as far as necessary to keep the
+ * tick count bounded. The three fixed steps are what a real call uses; the
+ * fallback exists so that an implausible scale degrades to a coarse axis
+ * instead of to thousands of nodes.
+ */
+export function tickStep(scale: number): number {
+  const step = scale <= 2.5 ? 0.5 : scale <= 6 ? 1 : 2;
+  return Math.max(step, scale / MAX_AXIS_TICKS);
 }
 
 export function Waterfall({ turns }: { turns: Turn[] }) {
@@ -74,7 +101,11 @@ export function Waterfall({ turns }: { turns: Turn[] }) {
   // Only turns the caller started are numbered: counting the agent's greeting as
   // turn one would put every subsequent row one ahead of the id in the logs.
   let ordinal = 0;
-  const rows = turns.map((turn) => {
+  // Bounded before anything is built, not after: the cost being avoided is the
+  // construction of the rows, not their rendering. The oldest are kept rather
+  // than the newest, so turn numbering still starts at T1 and matches the logs.
+  const hidden = Math.max(0, turns.length - MAX_WATERFALL_ROWS);
+  const rows = turns.slice(0, MAX_WATERFALL_ROWS).map((turn) => {
     const waterfall = turnWaterfall(turn);
     if (!waterfall.agentInitiated) ordinal += 1;
     return { turn, waterfall, label: waterfall.agentInitiated ? 'GREET' : `T${ordinal}` };
@@ -106,6 +137,13 @@ export function Waterfall({ turns }: { turns: Turn[] }) {
           ))}
         </div>
       )}
+
+      {hidden > 0 ? (
+        <p className="wf-empty">
+          Showing the first {MAX_WATERFALL_ROWS} turns · {hidden} more in this recording are not
+          drawn.
+        </p>
+      ) : null}
 
       <div className="wf-row wf-row--axis">
         <span className="wf-row__id" />
@@ -334,7 +372,13 @@ const BUDGET_LABEL_WIDTH = 150;
 function Axis({ width, scale, budgetX }: { width: number; scale: number; budgetX: number }) {
   const step = tickStep(scale);
   const ticks: number[] = [];
-  for (let tick = 0; tick <= scale + 1e-6; tick += step) ticks.push(Number(tick.toFixed(2)));
+  // Belt as well as braces: `tickStep` bounds the count arithmetically, and the
+  // loop bound means that a step which somehow came back as zero or NaN cannot
+  // hang the tab rather than merely drawing a wrong axis.
+  for (let tick = 0; tick <= scale + 1e-6 && ticks.length < MAX_AXIS_TICKS + 1; tick += step) {
+    if (!(step > 0)) break;
+    ticks.push(Number(tick.toFixed(2)));
+  }
 
   // The label hangs off the rule on whichever side can hold it, so it never
   // runs off the card on a phone or collides with the zero tick.

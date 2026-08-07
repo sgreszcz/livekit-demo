@@ -19,27 +19,43 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import pricing
 
 __all__ = [
+    "CALL_SUMMARY_MARKER",
+    "CHECKPOINT_SECONDS",
+    "CHECKPOINT_TIMEOUT",
     "CONTROL_TOPIC",
+    "FINAL_TIMEOUT",
     "OBSERVER_IDENTITY_PREFIX",
+    "MIN_PHONE_DIGITS",
+    "MIN_SEPARATED_DIGITS",
+    "PHONE_RUN",
+    "REDACTED",
     "SCHEMA_VERSION",
+    "SIP_ROOM_PREFIX",
     "TELEMETRY_TOPIC",
     "AppliedChaos",
+    "DebriefUploader",
     "LLMInvocation",
     "PipelineModels",
     "TelemetryPublisher",
     "Turn",
     "TurnStore",
+    "classify_entry_room",
     "envelope",
     "is_observer",
+    "log_call_summary",
+    "percentile_ms",
     "post_debrief",
+    "redact_room_name",
 ]
 
 logger = logging.getLogger("glass-cockpit.telemetry")
@@ -47,6 +63,95 @@ logger = logging.getLogger("glass-cockpit.telemetry")
 SCHEMA_VERSION = 1
 TELEMETRY_TOPIC = "cockpit"
 CONTROL_TOPIC = "cockpit-control"
+
+# ------------------------------------------------------------------ room names
+#
+# The room name is the one identifier in this system that carries PII. A browser
+# call gets `cockpit-<random>`, which means nothing on its own. A phone call does
+# not: LiveKit's SIP dispatch names the room after the trunk and the *caller's
+# number* — `sip-cockpit-_+447700900123_5xzppVvwo6Px` — so anything that stores or
+# republishes a raw room name publishes a stranger's phone number. A debrief is
+# fetched by anyone holding its share link, and `call_meta` goes out on the data
+# channel to every participant including read-only observers; both are publication.
+#
+# The regex and the replacement mirror `redactRoomName` in `worker/src/rooms.ts`
+# byte for byte, deliberately: both sides redact, and they must agree on the result
+# or the same call would be stored under two different names.
+#
+# NOTE: this only covers what *this repo* emits. LiveKit's own log lines (the ones
+# `lk agent logs` streams) carry the raw room name in their `room` field, and that
+# is outside this repo's control — see agent/OBSERVABILITY.md.
+
+# A run of digits long enough to be a phone number, with the optional `+` that makes
+# it E.164. Seven rather than six: the shortest numbers anyone dials are seven digits,
+# and every extra required digit makes a false positive on a random base62 room suffix
+# less likely. A false positive costs a mangled cosmetic string and nothing else.
+PHONE_RUN = re.compile(r"\+?\d[\d\s().-]{5,}\d")
+"""Digit runs long enough to be a phone number, separators allowed between them.
+
+Mirrors ``PHONE_RUN`` in ``worker/src/rooms.ts`` — the two sides redact identically
+or the agent uploads something the Worker would have stripped. Separators are
+permitted because a rule matching only unbroken digits is evaded by the way people
+actually write numbers (``+44-7700-900123``), and the room-name grammar allows
+``-`` and ``_``; the separators are then removed and the DIGITS counted, so a
+hyphenated base62 id carrying a couple of digits is not mistaken for a number.
+"""
+
+MIN_PHONE_DIGITS = 7
+"""An unbroken run this long is a phone number. Nothing else in a room name is."""
+
+MIN_SEPARATED_DIGITS = 9
+"""When separators are involved, more digits are required.
+
+Allowing separators is what catches ``+44-7700-900123``, but it also matches
+``2026-08-07`` — eight digits, and a date. Real dialable numbers are longer (E.164
+runs to fifteen, a UK mobile is eleven), so nine separates them from dates and
+version strings while still catching every way a person writes a number.
+"""
+
+#: What a redacted number is replaced with. Recognisable, and never itself a number.
+REDACTED = "+REDACTED"
+
+#: Room-name prefix LiveKit's SIP dispatch uses. Authoritative for entry classification.
+SIP_ROOM_PREFIX = "sip-cockpit-"
+
+
+def redact_room_name(name: str) -> str:
+    """Strip caller numbers from a room name, keeping its shape.
+
+    ``sip-cockpit-_+447700900123_5xzppVvwo6Px`` → ``sip-cockpit-_+REDACTED_5xzppVvwo6Px``.
+    The ``sip-cockpit-`` prefix survives (entry classification reads it) and so does the
+    random suffix (it is what makes one call distinguishable from another), while the
+    only field a person could be identified by is gone. Idempotent, so it is safe to
+    apply again to a name that has already been through it.
+    """
+    def _replace(match: re.Match[str]) -> str:
+        text = match.group(0)
+        digits = re.sub(r"\D", "", text)
+        # "+" is punctuation a number legitimately starts with, not a separator.
+        needed = MIN_SEPARATED_DIGITS if re.search(r"[^\d+]", text) else MIN_PHONE_DIGITS
+        return REDACTED if len(digits) >= needed else text
+
+    return PHONE_RUN.sub(_replace, name)
+
+
+def classify_entry_room(room_name: str) -> str:
+    """Classify how the caller reached us from the ROOM NAME alone.
+
+    The room name is known the instant ``ctx.connect()`` returns, which is the whole
+    point: the previous implementation classified by awaiting the caller participant,
+    an await with no timeout that never resolves if the caller hangs up mid-connect —
+    and everything registered after it, the shutdown callback included, never happened.
+    A synchronous classification cannot fail, cannot block, and cannot lose a call.
+
+    This mirrors ``classifyEntry`` in ``worker/src/active.ts``, which already treats the
+    prefix as authoritative for the same purpose. Unlike the worker's version there is no
+    ``null`` case: this agent only ever runs in a room it was dispatched into, and a name
+    that matches no known prefix (a console session, a hand-made room) is a browser-shaped
+    call as far as telemetry is concerned.
+    """
+    return "sip" if room_name.startswith(SIP_ROOM_PREFIX) else "browser"
+
 
 # A cockpit opened by someone who is not the caller joins the room under this identity
 # prefix. Observers are read-only: they never drive turn detection, never decide the
@@ -611,6 +716,59 @@ class TurnStore:
             ts=started_at,
         )
 
+    # ---------------------------------------------------------- fleet-level summary
+
+    def call_summary(
+        self,
+        *,
+        call_id: str,
+        entry: str,
+        room: str,
+        close_reason: str,
+        started_at: float,
+        ended_at: float,
+    ) -> dict[str, Any]:
+        """One flat, JSON-serialisable record describing the whole call.
+
+        This exists because KV is not the only place a call has to leave a trace. The
+        debrief upload can fail — a redeploy mid-call, an unreachable Worker, a bad
+        token — and when it does, the *only* surviving evidence that a call happened is
+        the worker's stdout, which LiveKit Cloud already streams as structured JSON
+        (``lk agent logs``). Emitting this as a single line under one greppable marker
+        makes fleet latency, cost and failure rates recoverable from logs alone.
+
+        Deliberately flat and deliberately not an envelope: it is not part of the v1
+        wire schema, nothing merges it, and a log aggregator wants scalars it can
+        aggregate, not a nested waterfall.
+
+        ``room`` is redacted here as well as by the caller. Redaction is idempotent and
+        this is the last gate before a room name reaches a log aggregator, so it costs
+        one regex pass to make the guarantee unconditional.
+        """
+        latencies = [
+            t.total_response_latency
+            for t in self._turns.values()
+            if t.total_response_latency is not None
+        ]
+        return {
+            "call_id": call_id,
+            "entry": entry,
+            "room": redact_room_name(room),
+            "close_reason": close_reason,
+            "duration_seconds": _r(ended_at - started_at),
+            "turns": len(self._turns),
+            "turns_completed": len(latencies),
+            "latency_p50_ms": percentile_ms(latencies, 50),
+            "latency_p95_ms": percentile_ms(latencies, 95),
+            "degraded_turns": sum(1 for t in self._turns.values() if t.degraded),
+            "barge_ins": sum(1 for t in self._turns.values() if t.barge_in),
+            "prompt_tokens": self._prompt_tokens,
+            "completion_tokens": self._completion_tokens,
+            "stt_seconds": _r(self._stt_audio_seconds),
+            "tts_characters": self._tts_characters,
+            "est_cost_usd": self.estimated_cost_usd(),
+        }
+
     # ------------------------------------------------------------------- replay
 
     def apply_envelope(self, env: dict[str, Any]) -> None:
@@ -703,6 +861,44 @@ class TurnStore:
             f"so far — an estimate, not a bill."
         )
         return " ".join(lines)
+
+
+#: The token a log aggregator greps for to find per-call summaries. The line is
+#: ``call_summary {"call_id":...}`` — marker, one space, then compact JSON, so
+#: ``grep call_summary | cut -d' ' -f2- | jq`` works on raw text and
+#: ``select(.message | startswith("call_summary"))`` works on LiveKit's own JSON.
+CALL_SUMMARY_MARKER = "call_summary"
+
+
+def percentile_ms(latencies: list[float], p: float) -> float | None:
+    """Nearest-rank percentile of a list of seconds, reported in milliseconds.
+
+    Nearest rank rather than interpolation: ``rank = ceil(p/100 × n)``, 1-indexed and
+    clamped into range, so every reported value is a latency some turn actually had.
+    On calls of five or ten turns — which is most of them — an interpolated p95 is a
+    number that never happened, and "the slowest turn was 2.1 seconds" is a claim an
+    operator can act on in a way that "2.03 seconds interpolated" is not.
+
+    Returns ``None`` for an empty list. A call that completed no turns has no p50; zero
+    would be a lie that averages beautifully across a fleet.
+    """
+    if not latencies:
+        return None
+    ordered = sorted(latencies)
+    rank = min(max(math.ceil(p / 100 * len(ordered)), 1), len(ordered))
+    return _r(ordered[rank - 1] * 1000, 1)
+
+
+def log_call_summary(summary: dict[str, Any], *, log: logging.Logger | None = None) -> str:
+    """Emit the per-call summary as exactly one parseable log line, and return it.
+
+    Separators are compact and the line is single-line by construction: log shippers
+    split on newlines, and a pretty-printed summary would arrive as fifteen unrelated
+    records. ``ensure_ascii`` stays on so the line survives a pipe with no locale.
+    """
+    line = json.dumps(summary, separators=(",", ":"))
+    (log or logger).info("%s %s", CALL_SUMMARY_MARKER, line)
+    return line
 
 
 @dataclass(frozen=True)
@@ -834,6 +1030,160 @@ def encode_envelope(env: dict[str, Any]) -> bytes:
     return data
 
 
+# --------------------------------------------------------------- debrief upload
+#
+# Timing here is not a style choice, it is arithmetic against the SDK.
+#
+# `livekit.agents.worker.WorkerOptions.shutdown_process_timeout` is 10.0 s, enforced in
+# `ipc/supervised_proc.py` by `asyncio.wait_for(self._shutdown_ack_fut, ...)` followed by
+# a dump signal and a hard kill. Everything a job does on the way out — including
+# `publisher.aclose()` draining the data channel — comes out of that one budget. The
+# original 10.0 s client timeout therefore could not fail gracefully: a slow upload was
+# killed mid-flight and left no log line at all, which is precisely how the production
+# failure went unexplained.
+#
+# 4.0 s leaves room for the drain and still logs a named warning when it is exceeded.
+
+#: How often an in-progress call posts a checkpoint. A call that dies mid-flight (SIP
+#: drop, worker redeploy, OOM) loses at most this much, instead of losing everything.
+CHECKPOINT_SECONDS = 15.0
+
+#: Checkpoints are best-effort and run *during* a live call, so they must never sit on
+#: the event loop. Three seconds is longer than a healthy Worker round-trip and shorter
+#: than anything a caller would notice.
+CHECKPOINT_TIMEOUT = 3.0
+
+#: The final upload's client timeout. Must fit inside the 10 s job-shutdown budget
+#: alongside `publisher.aclose()` — see the note above.
+FINAL_TIMEOUT = 4.0
+
+
+class _PostFn(Protocol):
+    """One debrief HTTP request. Raises on failure; returns the decoded JSON body.
+
+    Injected so the uploader can be tested with no network and no real timers.
+    """
+
+    async def __call__(
+        self,
+        *,
+        method: str,
+        url: str,
+        token: str | None,
+        body: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]: ...
+
+
+class _MessageLog(Protocol):
+    """The slice of :class:`TelemetryPublisher` the uploader reads."""
+
+    @property
+    def messages(self) -> list[dict[str, Any]]: ...
+
+
+async def _http_debrief(
+    *,
+    method: str,
+    url: str,
+    token: str | None,
+    body: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any]:
+    """Perform one debrief request. Raises on any failure — the caller decides.
+
+    ``httpx`` stays imported lazily (it is only needed at the end of a call, and the
+    import is cached after the first one), and the response is decoded defensively: the
+    checkpoint endpoint answers ``{"ok": true}`` with no share URL, and a future Worker
+    answering ``204`` with no body must not look like a failure.
+    """
+    import httpx
+
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.request(method, url, json=body, headers=headers)
+        response.raise_for_status()
+        content = response.content
+    if not content:
+        return {}
+    try:
+        decoded = json.loads(content)
+    except ValueError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a timeout from either asyncio or httpx.
+
+    Matched by class name rather than by importing ``httpx.TimeoutException`` so this
+    stays honest for an injected fake and keeps the httpx import lazy.
+    """
+    if isinstance(exc, TimeoutError):  # asyncio.TimeoutError is this since 3.11
+        return True
+    return any(cls.__name__ == "TimeoutException" for cls in type(exc).__mro__)
+
+
+def _debrief_body(
+    *,
+    call_id: str,
+    meta: dict[str, Any],
+    messages: list[dict[str, Any]],
+    ended_at: float,
+    in_progress: bool,
+) -> dict[str, Any]:
+    """Build the HTTP debrief body shared by checkpoints and the final upload.
+
+    ``in_progress`` lives here and nowhere else: it is a property of the *upload*, not
+    of the call, and ``docs/TELEMETRY-SCHEMA.md`` has no envelope field for it.
+
+    ``messages`` is copied. The list keeps growing while the request is in flight — an
+    observer joining, a straggler metric — and serialising a list that mutates under the
+    encoder is a ``RuntimeError`` on a path whose entire job is not to raise.
+    """
+    return {
+        "call_id": call_id,
+        "meta": meta,
+        "ended_at": ended_at,
+        "messages": list(messages),
+        "in_progress": in_progress,
+    }
+
+
+async def _upload_final(
+    post: _PostFn,
+    *,
+    url: str,
+    token: str | None,
+    body: dict[str, Any],
+    timeout: float,
+) -> tuple[bool, str | None]:
+    """Run the final POST, swallowing every failure. Returns ``(succeeded, share_url)``.
+
+    The success flag is separate from the URL because they are different questions: a
+    Worker that stored the call but answered without a ``url`` field still means "do not
+    retry", while a timeout means "the shutdown path should try again".
+    """
+    try:
+        data = await post(method="POST", url=url, token=token, body=body, timeout=timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the call already ended; nothing here is worth raising for
+        if _is_timeout(exc):
+            logger.warning(
+                "debrief upload exceeded FINAL_TIMEOUT of %.1fs and was abandoned; "
+                "the job-shutdown budget is %.1fs total",
+                timeout,
+                10.0,
+            )
+        else:
+            logger.warning("debrief upload failed: %s", exc)
+        return False, None
+    share_url = data.get("url")
+    logger.info("debrief stored: %s", share_url)
+    return True, share_url
+
+
 async def post_debrief(
     *,
     url: str | None,
@@ -847,26 +1197,225 @@ async def post_debrief(
 
     A missing or unreachable endpoint is not fatal — the demo still works without a
     shareable replay, so failures are logged and swallowed.
+
+    Kept as a standalone entry point (the one-shot upload, no checkpoints, no
+    once-only bookkeeping) even though :class:`DebriefUploader` is what the agent runs.
     """
     if not url:
         logger.info("DEBRIEF_URL unset; skipping debrief upload (%d envelopes)", len(messages))
         return None
 
-    import httpx
-
-    body = {"call_id": call_id, "meta": meta, "ended_at": ended_at, "messages": messages}
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json=body, headers=headers)
-            response.raise_for_status()
-            share_url = response.json().get("url")
-    except Exception as exc:  # noqa: BLE001 - the call already ended; nothing here is worth raising for
-        logger.warning("debrief upload failed: %s", exc)
-        return None
-
-    logger.info("debrief stored: %s", share_url)
+    _, share_url = await _upload_final(
+        _http_debrief,
+        url=url,
+        token=token,
+        body=_debrief_body(
+            call_id=call_id,
+            meta=meta,
+            messages=messages,
+            ended_at=ended_at,
+            in_progress=False,
+        ),
+        timeout=FINAL_TIMEOUT,
+    )
     return share_url
+
+
+class DebriefUploader:
+    """Keeps a durable record of a call, during it and at the end of it.
+
+    Two problems, one owner.
+
+    *Durability.* A debrief posted only at job shutdown is posted only when the ROOM
+    closes, and a room stays open while any participant is in it — an observer cockpit,
+    an abandoned browser tab. Observed in production: the session closed on a SIP hangup
+    and eleven minutes later the job was still alive, holding an unposted debrief, one
+    redeploy away from losing the call entirely. Checkpoints every
+    :data:`CHECKPOINT_SECONDS` bound that loss to fifteen seconds, and give Grafana a
+    view of calls that are still in progress.
+
+    *Exactly-once-ish.* The final body is uploaded once per call. The Worker upserts by
+    ``call_id`` so a duplicate would be harmless, but a duplicate POST also mints a
+    second share id and costs a second slice of the shutdown budget. The guard is
+    therefore "once on SUCCESS": a session-close flush that failed is retried by the
+    job-shutdown path, which is the belt to its braces.
+
+    Everything is injectable — ``post``, ``sleep``, ``clock`` — so the whole class is
+    testable with no network and no real timers.
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str | None,
+        token: str | None,
+        call_id: str,
+        meta: dict[str, Any],
+        publisher: _MessageLog,
+        post: _PostFn | None = None,
+        sleep: Callable[[float], Any] | None = None,
+        clock: Callable[[], float] | None = None,
+        interval: float = CHECKPOINT_SECONDS,
+        checkpoint_timeout: float = CHECKPOINT_TIMEOUT,
+        final_timeout: float = FINAL_TIMEOUT,
+    ) -> None:
+        self._url = url
+        self._token = token
+        self._call_id = call_id
+        self._meta = meta
+        self._publisher = publisher
+        self._post: _PostFn = post or _http_debrief
+        self._sleep = sleep or asyncio.sleep
+        self._clock = clock or time.time
+        self._interval = interval
+        self._checkpoint_timeout = checkpoint_timeout
+        self._final_timeout = final_timeout
+        self._task: asyncio.Task[None] | None = None
+        # -1, not 0: the first tick must always fire, even on a call that has somehow
+        # emitted nothing, because the point of the first checkpoint is to tell the
+        # Worker this call EXISTS.
+        self._checkpointed = -1
+        self._final_lock = asyncio.Lock()
+        self._final_done = False
+        self._share_url: str | None = None
+        self.checkpoints = 0
+        """How many checkpoints were actually uploaded. Read by tests and logging."""
+
+    @property
+    def final_uploaded(self) -> bool:
+        """True once the final body has been stored; the retry guard reads this."""
+        return self._final_done
+
+    @property
+    def share_url(self) -> str | None:
+        return self._share_url
+
+    # ---------------------------------------------------------------- lifecycle
+
+    def start(self) -> None:
+        """Begin posting checkpoints. Idempotent, and a no-op without an endpoint."""
+        if self._task is not None:
+            return
+        if not self._url:
+            logger.info("DEBRIEF_URL unset; in-call checkpoints disabled")
+            return
+        self._task = asyncio.create_task(self._loop(), name="cockpit-debrief-checkpoint")
+
+    async def aclose(self) -> None:
+        """Stop the checkpoint task and wait for it to be gone.
+
+        Awaited rather than fired and forgotten: :meth:`finalize` calls this first so a
+        checkpoint cannot still be in flight when the final POST lands. The Worker keys
+        checkpoints by ``call_id`` and deletes them on the final POST, so a checkpoint
+        that arrived *after* would resurrect the call as permanently in-progress.
+        """
+        task, self._task = self._task, None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _loop(self) -> None:
+        # Checkpoint FIRST, then settle into the interval.
+        #
+        # Sleeping first left every call unrecoverable for its opening fifteen
+        # seconds, and short calls are exactly the ones this exists to save: a
+        # ten-second call whose final POST times out had no checkpoint to fall
+        # back on, and its only remaining hope was the job-shutdown callback —
+        # which is deferred indefinitely by precisely the abandoned-room
+        # condition that motivated this whole change. The first checkpoint is
+        # the cheapest one there is, too: a greeting and a call_meta envelope.
+        await self.checkpoint()
+        while True:
+            await self._sleep(self._interval)
+            await self.checkpoint()
+
+    # --------------------------------------------------------------- checkpoints
+
+    async def checkpoint(self) -> bool:
+        """PUT the call so far. Returns whether anything was actually uploaded.
+
+        Skipped when the envelope count has not moved: a call sitting silent between
+        turns has nothing new to say, and re-uploading the same body every fifteen
+        seconds would spend the Worker's write budget on nothing.
+
+        Never raises. A checkpoint is an optimisation; a call must not end because one
+        failed, and the failure is deliberately logged at warning rather than error —
+        the final upload is still to come and is the one that matters.
+        """
+        if not self._url:
+            return False
+        count = len(self._publisher.messages)
+        if count == self._checkpointed:
+            logger.debug("debrief checkpoint skipped: no new envelopes (%d)", count)
+            return False
+        try:
+            await self._post(
+                method="PUT",
+                url=self._url,
+                token=self._token,
+                body=_debrief_body(
+                    call_id=self._call_id,
+                    meta=self._meta,
+                    messages=self._publisher.messages,
+                    ended_at=self._clock(),
+                    in_progress=True,
+                ),
+                timeout=self._checkpoint_timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a checkpoint must never break a live call
+            logger.warning("debrief checkpoint failed (%d envelopes): %s", count, exc)
+            return False
+        self._checkpointed = count
+        self.checkpoints += 1
+        logger.debug("debrief checkpoint stored (%d envelopes)", count)
+        return True
+
+    # -------------------------------------------------------------- final upload
+
+    async def finalize(self, *, ended_at: float) -> str | None:
+        """Stop checkpointing and POST the finished call. Safe to call more than once.
+
+        ``ended_at`` must be the time the SESSION closed, not the time the job did. They
+        can be many minutes apart (an observer holding the room open), and taking the
+        job's clock is what once stored a ten-second conversation as a 4376-second call.
+        """
+        await self.aclose()
+        async with self._final_lock:
+            if self._final_done:
+                logger.debug("final debrief already uploaded for %s", self._call_id)
+                return self._share_url
+            if not self._url:
+                logger.info(
+                    "DEBRIEF_URL unset; skipping debrief upload (%d envelopes)",
+                    len(self._publisher.messages),
+                )
+                self._final_done = True
+                return None
+            ok, share_url = await _upload_final(
+                self._post,
+                url=self._url,
+                token=self._token,
+                body=_debrief_body(
+                    call_id=self._call_id,
+                    meta=self._meta,
+                    messages=self._publisher.messages,
+                    ended_at=ended_at,
+                    in_progress=False,
+                ),
+                timeout=self._final_timeout,
+            )
+            if not ok:
+                # Left un-finalised on purpose: the job-shutdown path calls this again,
+                # and the last checkpoint is still in KV meanwhile, so the call is not
+                # invisible even if that retry never happens.
+                return None
+            self._final_done = True
+            self._share_url = share_url
+            return share_url
 
 
 def _dumps(env: dict[str, Any]) -> bytes:

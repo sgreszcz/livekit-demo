@@ -53,6 +53,15 @@ export interface Cockpit {
   /** What this browser has requested; the agent's ack lives on `state.chaos`. */
   chaosRequest: ChaosInjections;
   micEnabled: boolean;
+  /**
+   * Observer sessions only: whether the watched call is audible here.
+   *
+   * False on every fresh source, because the common case turned out to be a
+   * visitor watching their OWN call on the laptop beside the phone — laptop
+   * speakers into the phone's microphone is an echo the agent hears too. A
+   * caller is audible by construction and this flag says nothing about them.
+   */
+  listening: boolean;
   share: ShareResult | null;
   sharing: boolean;
   startCall: () => Promise<void>;
@@ -63,6 +72,7 @@ export interface Cockpit {
   reset: () => void;
   setChaos: (patch: Partial<ChaosInjections>) => Promise<void>;
   toggleMic: () => Promise<void>;
+  toggleListening: () => Promise<void>;
   shareCall: () => Promise<void>;
 }
 
@@ -78,6 +88,7 @@ export function useCockpit(): Cockpit {
   const [error, setError] = useState<string | null>(null);
   const [chaosRequest, setChaosRequest] = useState<ChaosInjections>(CHAOS_REQUEST_OFF);
   const [micEnabled, setMicEnabled] = useState(true);
+  const [listening, setListening] = useState(false);
   const [share, setShare] = useState<ShareResult | null>(null);
   const [sharing, setSharing] = useState(false);
 
@@ -118,6 +129,11 @@ export function useCockpit(): Cockpit {
     dispatch({ kind: 'reset' });
     setShare(null);
     setError(null);
+    // Every new source starts silent-if-observing, and the flag has to be reset
+    // here rather than only in `reset()`: watching a second call in a row goes
+    // straight from one observer session to the next, and a Listen button left
+    // reading "on" would describe a session that attached its tracks muted.
+    setListening(false);
     return generationRef.current;
   }, [clearSources]);
 
@@ -231,7 +247,12 @@ export function useCockpit(): Cockpit {
 
   /**
    * Leaving is not ending: the call carries on without this browser, so there is
-   * no debrief to offer and nothing to share. Straight back to the hero.
+   * no debrief to offer and nothing to share — straight back to `idle`.
+   *
+   * What `idle` then looks like is the view's business, not this hook's. On the
+   * cockpit it is the hero; on `/live` it is the holding screen, which goes on
+   * waiting for the next call. That is the whole reason this resets the source
+   * rather than navigating anywhere itself.
    */
   const stopObserving = useCallback(() => {
     reset();
@@ -281,6 +302,21 @@ export function useCockpit(): Cockpit {
     await session?.setMicrophoneEnabled(next).catch(() => {});
   }, [micEnabled]);
 
+  /**
+   * The mirror image of the guard on `toggleMic` and `setChaos`: those refuse on
+   * an observer session, this one refuses on everything else. A caller's audio
+   * is the call itself and has no business being muted from here — and a replay,
+   * a debrief and an idle hero have no audio elements at all, so a switch that
+   * moved would be an instrument reading a state that does not exist.
+   */
+  const toggleListening = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session?.observing) return;
+    const next = !listening;
+    setListening(next);
+    await session.setAudioMuted(!next).catch(() => {});
+  }, [listening]);
+
   const shareCall = useCallback(async () => {
     // Snapshot: the live log keeps appending underneath an in-flight POST.
     const messages: Envelope[] = [...logRef.current.entries];
@@ -318,6 +354,7 @@ export function useCockpit(): Cockpit {
     error,
     chaosRequest,
     micEnabled,
+    listening,
     share,
     sharing,
     startCall,
@@ -328,6 +365,7 @@ export function useCockpit(): Cockpit {
     reset,
     setChaos,
     toggleMic,
+    toggleListening,
     shareCall,
   };
 }
