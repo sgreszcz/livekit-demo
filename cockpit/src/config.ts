@@ -31,4 +31,16 @@ export const SITE_URL = 'https://agentmaker.io';
  */
 export const GRAFANA_URL = 'https://agentmaker.grafana.net/d/glass-cockpit-fleet';
 
+/**
+ * The same board without a Grafana login, for anyone handed this page. The
+ * internal URL above needs an account; this one does not, so it is the one the
+ * footer offers.
+ */
+export const GRAFANA_PUBLIC_URL =
+  'https://agentmaker.grafana.net/public-dashboards/fa746629851a4a21882bbe2f135c40bf';
+
 export const REPO_URL: string = env.VITE_REPO_URL ?? 'https://github.com/sgreszcz/livekit-demo';
+
+export const LINKEDIN_URL = 'https://www.linkedin.com/in/sgreszcz/';
+
+export const CONTACT_EMAIL = 'stephen@agentmaker.io';

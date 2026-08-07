@@ -16,6 +16,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ChaosControl } from './ChaosControl';
 import { CockpitBoard } from './CockpitBoard';
 import { ConnectionInfo } from './ConnectionInfo';
+import { Footer } from './Footer';
 import {
   CallsPerDay,
   RatioGauge,
@@ -900,5 +901,25 @@ describe('ObserverBar', () => {
       expect(markup).not.toContain('told at the start');
       expect(markup).not.toContain('are notified');
     }
+  });
+});
+
+describe('Footer', () => {
+  /**
+   * Every view renders it, because any of them can be the page someone is sent
+   * first — a shared debrief and a /live link both skip the hero.
+   */
+  it('carries all five contact links', () => {
+    const html = renderToStaticMarkup(<Footer />);
+    expect(html).toContain('https://agentmaker.io');
+    expect(html).toContain('https://github.com/sgreszcz/livekit-demo');
+    expect(html).toContain('https://www.linkedin.com/in/sgreszcz/');
+    expect(html).toContain('mailto:stephen@agentmaker.io');
+    expect(html).toContain('/public-dashboards/');
+  });
+
+  it('links the login-free Grafana board, not the internal one', () => {
+    const html = renderToStaticMarkup(<Footer />);
+    expect(html).not.toContain('/d/glass-cockpit-fleet');
   });
 });

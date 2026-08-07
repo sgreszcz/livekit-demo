@@ -1991,6 +1991,14 @@ a.placard__value:hover {
   color: var(--text-mute);
 }
 
+/* Each link travels with its own leading separator, so a wrapped row never
+   begins with a dangling slash. */
+.footer__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .footer__sep {
   color: var(--line-strong);
 }
