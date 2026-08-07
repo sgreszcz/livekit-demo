@@ -310,7 +310,10 @@ function Debrief({ cockpit }: { cockpit: ReturnType<typeof useCockpit> }) {
       {share ? (
         <div className="share-url">
           <span className="legend">Share</span>
-          <a href={share.url}>{share.url}</a>
+          {/* A new tab so opening the replay does not discard the call it came from. */}
+          <a href={share.url} target="_blank" rel="noreferrer noopener">
+            {share.url}
+          </a>
         </div>
       ) : (
         <button

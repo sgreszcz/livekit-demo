@@ -27,7 +27,7 @@ import {
   callLength,
   latencyValue,
 } from '../components/FleetCharts';
-import { GRAFANA_URL } from '../config';
+import { GRAFANA_PUBLIC_URL } from '../config';
 import { LATENCY_BUDGET_SECONDS } from '../telemetry/store';
 import type { FleetMetrics } from '../telemetry/metrics';
 import { useMetrics } from '../useMetrics';
@@ -174,7 +174,7 @@ export function DashboardView() {
             : load.status === 'ready'
               ? 'Complete: every stored recording is counted above.'
               : 'No reading yet.'}{' '}
-          <a href={GRAFANA_URL} rel="noreferrer">
+          <a href={GRAFANA_PUBLIC_URL} target="_blank" rel="noreferrer noopener">
             same data in Grafana
           </a>
         </p>

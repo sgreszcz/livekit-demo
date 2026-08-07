@@ -922,4 +922,22 @@ describe('Footer', () => {
     const html = renderToStaticMarkup(<Footer />);
     expect(html).not.toContain('/d/glass-cockpit-fleet');
   });
+
+  it('opens external links in a new tab so an observed call is not discarded', () => {
+    const html = renderToStaticMarkup(<Footer />);
+    for (const href of [
+      'https://agentmaker.io',
+      'https://github.com/sgreszcz/livekit-demo',
+      'https://www.linkedin.com/in/sgreszcz/',
+    ]) {
+      const anchor = html.slice(html.indexOf(`href="${href}"`));
+      expect(anchor.slice(0, 200)).toContain('target="_blank"');
+    }
+  });
+
+  it('leaves mailto: in the same tab — a new window for a mail client is an empty one', () => {
+    const html = renderToStaticMarkup(<Footer />);
+    const anchor = html.slice(html.indexOf('href="mailto:'));
+    expect(anchor.slice(0, anchor.indexOf('</a>'))).not.toContain('target=');
+  });
 });

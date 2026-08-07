@@ -366,7 +366,9 @@ a:hover {
   z-index: 1;
   max-width: 1320px;
   margin: 0 auto;
-  padding: 0 var(--gutter) 64px;
+  /* Clears the pinned footer, with room for it to wrap to two rows on a phone
+     without covering the last panel. */
+  padding: 0 var(--gutter) 104px;
 }
 
 .topbar {
@@ -1979,28 +1981,31 @@ a.placard__value:hover {
 
 /* ── Footer ───────────────────────────────────────────────────────────── */
 
+/* Pinned, not scrolled to: on the cockpit and the dashboard the page is taller
+   than the viewport, and a footer at the end of it is one most readers never
+   see. Solid rather than translucent — a blurred bar over a moving waterfall
+   costs a compositor pass per frame, and turns to mud on a projector. */
 .footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
-  margin-top: 44px;
-  padding-top: 18px;
+  justify-content: center;
+  gap: 4px 18px;
+  margin: 0;
+  padding: 9px var(--gutter);
   border-top: 1px solid var(--line);
+  background: var(--bg);
   font-size: var(--fs-meta);
   color: var(--text-mute);
 }
 
-/* Each link travels with its own leading separator, so a wrapped row never
-   begins with a dangling slash. */
-.footer__item {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.footer__sep {
-  color: var(--line-strong);
+.footer__by {
+  color: var(--text-faint);
 }
 
 /* ── Fleet dashboard ──────────────────────────────────────────────────── */
@@ -2467,14 +2472,11 @@ a.placard__value:hover {
   .spec-list dt {
     width: 92px;
   }
-  /* Stacked, so a wrapped line can never open with a dangling slash. */
+  /* Stays a wrapping row: stacked, five links would eat a third of a phone
+     screen for chrome that is pinned there permanently. */
   .footer {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 7px;
-  }
-  .footer__sep {
-    display: none;
+    gap: 2px 12px;
+    padding: 8px var(--gutter);
   }
 }
 
