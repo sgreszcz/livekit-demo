@@ -1,6 +1,7 @@
 /**
  * The bar an observer gets instead of a microphone: one switch, for their own
- * speakers.
+ * speakers. The microphone is the thing an observer never gets — the chaos
+ * panel below is fully live for them.
  *
  * It exists because of what real use turned out to be. The expected watcher was
  * a bystander on another machine; the actual one is the caller themselves,
@@ -25,8 +26,15 @@ interface ObserverBarProps {
 }
 
 /**
- * One line, carrying both things a watcher needs: what this page is (a
- * read-only view of somebody's live call) and why it is silent.
+ * One line, carrying both things a watcher needs: what this page is (a live
+ * view of somebody's call, whose chaos switches work) and why it is silent.
+ *
+ * It used to open "Read-only view of a live call", and that is no longer true —
+ * an observer may arm chaos, so this session CAN affect the call it is
+ * watching. What survived the change is the half that was always about audio:
+ * this page has no microphone and cannot be heard on the call, which is the
+ * only sense in which it is still read-only. Saying "read-only" flat would now
+ * be the page's one plain statement of what it is, and wrong.
  *
  * Deliberately not two lines, and deliberately not a dialog. This is a demo
  * whose whole argument is the instruments, and a visitor who has to dismiss
@@ -38,11 +46,11 @@ interface ObserverBarProps {
  * is the part that stops a visitor assuming a silent page is a dead one.
  */
 const MUTED_NOTE =
-  'Read-only view of a live call — audio muted to prevent echo. If this is your own call, keep it muted; the instruments update either way.';
+  'Watching a live call — you can arm chaos from here; audio is muted to prevent echo. If this is your own call, keep it muted; the instruments update either way.';
 
 /** The advice inverts once audio is on: the echo may already be happening. */
 const LISTENING_NOTE =
-  'Read-only view of a live call — audio on. If this is your own call on the phone beside you, mute again.';
+  'Watching a live call — you can arm chaos from here; audio is on. If this is your own call on the phone beside you, mute again.';
 
 export function ObserverBar({ listening, onToggle, onStop }: ObserverBarProps) {
   return (

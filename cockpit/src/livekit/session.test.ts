@@ -197,12 +197,12 @@ describe('CockpitSession.observe', () => {
     // promise like that is to count the calls that did not happen.
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(0);
 
-    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/read-only/);
-    await expect(session.setMicrophoneEnabled(false)).rejects.toThrow(/read-only/);
+    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/cannot speak/);
+    await expect(session.setMicrophoneEnabled(false)).rejects.toThrow(/cannot speak/);
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(0);
   });
 
-  it('marks the session read-only', async () => {
+  it('marks the session as observing', async () => {
     const session = await CockpitSession.observe('cockpit-demo01', callbacks);
     expect(session.observing).toBe(true);
   });
@@ -231,16 +231,69 @@ describe('CockpitSession.observe', () => {
     expect(callbacks.onEnvelope).not.toHaveBeenCalled();
   });
 
-  it('refuses to publish chaos rather than firing a frame the token forbids', async () => {
+  /*
+   * The feature this session exists for. The owner calls the demo from a phone
+   * and drives the instruments from the laptop, where the session is an
+   * observer — so an observer that cannot arm chaos puts the demo's best
+   * feature out of reach in its most natural flow.
+   *
+   * Every injection, not just the one that existed first: a partial grant would
+   * be a panel where three switches work and one silently does nothing.
+   */
+  it('publishes chaos on the control topic, exactly as a caller does', async () => {
     const session = await CockpitSession.observe('cockpit-demo01', callbacks);
 
-    // Every injection, not just the one that existed first: an observer that
-    // could still starve the model's tokens would be read-only in name only.
-    await expect(session.setChaos({ llm_delay_ms: 800 })).rejects.toThrow(/read-only/);
-    await expect(session.setChaos({ tts_delay_ms: 300 })).rejects.toThrow(/read-only/);
-    await expect(session.setChaos({ slow_model: true })).rejects.toThrow(/read-only/);
-    await expect(session.setChaos({ max_completion_tokens: 30 })).rejects.toThrow(/read-only/);
-    expect(lastRoom().localParticipant.publishData).not.toHaveBeenCalled();
+    await session.setChaos({ llm_delay_ms: 800 });
+    await session.setChaos({ tts_delay_ms: 300 });
+    await session.setChaos({ slow_model: true });
+    await session.setChaos({ max_completion_tokens: 30 });
+
+    const publish = lastRoom().localParticipant.publishData as unknown as {
+      mock: { calls: [Uint8Array, { topic?: string; reliable?: boolean }][] };
+    };
+    expect(publish.mock.calls).toHaveLength(4);
+
+    const decoder2 = new TextDecoder();
+    expect(
+      publish.mock.calls.map(([bytes]) => {
+        const message = JSON.parse(decoder2.decode(bytes)) as {
+          type: string;
+          payload: Record<string, unknown>;
+        };
+        return message.payload;
+      }),
+    ).toEqual([
+      { llm_delay_ms: 800 },
+      { tts_delay_ms: 300 },
+      { slow_model: true },
+      { max_completion_tokens: 30 },
+    ]);
+
+    // `cockpit-control` and nothing else. The token's data grant is only
+    // defensible because the cockpit publishes on exactly one topic, which the
+    // agent validates; a frame on any other topic would widen what an observer
+    // token means well beyond what was agreed.
+    for (const [, options] of publish.mock.calls) {
+      expect(options.topic).toBe('cockpit-control');
+      expect(options.reliable).toBe(true);
+    }
+  });
+
+  /*
+   * The line that did not move. Arming chaos and speaking on the call are two
+   * capabilities, and only one of them was granted: an observer can degrade a
+   * call deliberately and can never be heard on it.
+   */
+  it('still never reaches for a microphone, however much chaos it arms', async () => {
+    const session = await CockpitSession.observe('cockpit-demo01', callbacks);
+    const room = lastRoom();
+
+    await session.setChaos({ llm_delay_ms: 1500 });
+    await session.setChaos({ slow_model: true });
+
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(0);
+    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/cannot speak/);
+    expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(0);
   });
 
   it('samples no transport, and leaves no interval behind after disconnect', async () => {
@@ -419,12 +472,13 @@ describe('CockpitSession observer audio', () => {
     expect(agent.element.muted).toBe(false);
   });
 
-  it('is allowed on an observer session, unlike everything else that changes state', async () => {
-    // The read-only rule is about the CALL. Muting your own speakers changes
-    // nothing anyone else can hear, which is exactly why a bystander may do it.
+  it('is allowed on an observer session, unlike the one thing that is not', async () => {
+    // Muting your own speakers changes nothing anyone else can hear. The
+    // microphone is the only refusal left on this session, and it is the one
+    // that keeps a watcher unable to speak into the call it is degrading.
     const session = await CockpitSession.observe('cockpit-demo01', callbacks);
     await expect(session.setAudioMuted(false)).resolves.toBeUndefined();
-    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/read-only/);
+    await expect(session.setMicrophoneEnabled(true)).rejects.toThrow(/cannot speak/);
   });
 
   it('leaves a caller audible from the first frame', async () => {

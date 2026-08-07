@@ -15,9 +15,16 @@ const LAMP: Record<CockpitMode, { className: string; label: string }> = {
   connecting: { className: 'lamp--warn', label: 'Connecting' },
   live: { className: 'lamp--live', label: 'On air' },
   replay: { className: 'lamp--live', label: 'Replay' },
-  // Violet, not the caller's green and not the chaos amber: this browser is on
-  // the call but is not part of it, and that is its own state.
-  observing: { className: 'lamp--observe', label: 'Observing · read-only' },
+  /*
+   * Violet, not the caller's green and not the chaos amber: this browser is on
+   * the call but has no voice on it, and that is its own state.
+   *
+   * "Observing · read-only" until an observer could arm chaos; the qualifier
+   * now names the one thing that is actually withheld. A chip is three words
+   * wide, so it gets the true half rather than a hedge — and the observer bar
+   * directly below spells out the rest.
+   */
+  observing: { className: 'lamp--observe', label: 'Observing · mic off' },
   ended: { className: 'lamp--idle', label: 'Call ended' },
   error: { className: 'lamp--fault', label: 'Fault' },
 };

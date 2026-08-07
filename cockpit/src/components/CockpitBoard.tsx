@@ -27,10 +27,10 @@ import type { ChaosInjections } from '../telemetry/schema';
 import { duration, ms } from '../format';
 
 export interface ChaosControls {
-  /** What this browser has asked the agent for. */
-  request: ChaosInjections;
+  /** What this browser has asked the agent for, or null if it has asked nothing. */
+  request: ChaosInjections | null;
   disabled: boolean;
-  /** Overrides the disabled-state copy where the usual reason does not apply. */
+  /** Overrides the panel's caption where the standard copy does not fit. */
   note?: string;
   onChange: (patch: Partial<ChaosInjections>) => void;
 }
@@ -114,7 +114,7 @@ export function CockpitBoard({ state, follow, live = false, chaos }: CockpitBoar
                 request={chaos.request}
                 acked={state.chaos}
                 disabled={chaos.disabled}
-                disabledNote={chaos.note}
+                note={chaos.note}
                 onChange={chaos.onChange}
               />
             </Panel>

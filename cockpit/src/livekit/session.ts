@@ -7,7 +7,8 @@
  * fixture replay or a stored debrief.
  *
  * Two ways in: `connect` places a call and publishes a microphone, `observe`
- * joins someone else's call on a read-only token and publishes nothing.
+ * joins someone else's call on a token that may publish chaos control but never
+ * audio.
  */
 
 import {
@@ -177,9 +178,9 @@ class AgentClock {
 
 /**
  * `body` is what tells the Worker which kind of token to mint: `{}` for a caller
- * who publishes a microphone, `{ observe: roomName }` for a read-only observer.
- * One request function rather than two, so a change to error handling cannot
- * apply to only one of them.
+ * who publishes a microphone, `{ observe: roomName }` for an observer who never
+ * will. One request function rather than two, so a change to error handling
+ * cannot apply to only one of them.
  */
 async function fetchToken(body: Record<string, unknown> = {}): Promise<TokenResponse> {
   const response = await fetch('/api/token', {
@@ -196,10 +197,13 @@ async function fetchToken(body: Record<string, unknown> = {}): Promise<TokenResp
 export class CockpitSession {
   readonly room: Room;
   /**
-   * True for a session joined on an observer token. The token itself forbids
-   * publishing, so this is not the security boundary — it is what lets the
-   * cockpit fail loudly on its own side of the wire instead of firing a publish
-   * the server will refuse.
+   * True for a session joined on an observer token — one that may subscribe and
+   * may publish DATA, but never audio.
+   *
+   * Not the security boundary: the token forbids a microphone regardless of
+   * what this flag says. What it buys is failing loudly on this side of the
+   * wire rather than firing a publish the server will refuse, and knowing which
+   * of the two publish paths is open (chaos: yes, voice: no).
    */
   readonly observing: boolean;
   private audioElements = new Set<HTMLMediaElement>();
@@ -369,12 +373,18 @@ export class CockpitSession {
   }
 
   /**
-   * Joins a call someone else is on, read-only.
+   * Joins a call someone else is on: every instrument, the chaos switches, and
+   * no voice.
    *
    * The token minted for `{ observe: room }` carries `canPublish: false`, so
    * this session has no microphone and never asks for one — there is no
    * permission prompt anywhere on this path, which is the whole reason a
    * bystander can watch a phone call without being asked for anything.
+   *
+   * It does carry `canPublishData: true`, so `setChaos` works here exactly as
+   * it does on a caller session. The two capabilities are independent on
+   * purpose: a watcher may degrade the call deliberately and can never be heard
+   * on it.
    *
    * The agent replays its telemetry history to a joining `observer-` identity
    * before resuming live sends, so the store needs no special case: history
@@ -440,10 +450,10 @@ export class CockpitSession {
 
     // No transport sampling, and no ConnectionQualityChanged handler either.
     // Those samples describe the CALLER's uplink, measured from the microphone
-    // the caller publishes; an observer publishes nothing, so the only thing it
-    // could measure is its own connection to LiveKit — a different network path
-    // entirely. Printing that under "Transport" would be a lie told in the
-    // caller's voice.
+    // the caller publishes; an observer publishes no audio at all, so the only
+    // thing it could measure is its own connection to LiveKit — a different
+    // network path entirely. Printing that under "Transport" would be a lie
+    // told in the caller's voice.
 
     return session;
   }
@@ -618,14 +628,21 @@ export class CockpitSession {
   }
 
   /**
-   * Both publishing paths refuse outright on an observer session rather than
-   * attempting a publish the token forbids. The server would reject it anyway,
-   * but as an opaque failure deep inside the SDK; this says which rule was
-   * broken, at the call site that broke it.
+   * Refuses outright on an observer session rather than attempting a publish
+   * the token forbids. The server would reject it anyway, but as an opaque
+   * failure deep inside the SDK; this says which rule was broken, at the call
+   * site that broke it.
+   *
+   * Exactly one caller is left: the microphone. Chaos control used to come
+   * through here too and deliberately no longer does — an observer token now
+   * carries `canPublishData: true`, so a chaos publish is a publish the server
+   * will accept, and refusing it here would be the cockpit inventing a rule the
+   * token does not have. Audio is the rule that survived, and it is the whole
+   * of what "read-only" means on this session now.
    */
-  private assertWritable(action: string): void {
+  private assertAudioWritable(action: string): void {
     if (this.observing) {
-      throw new Error(`${action} is not available while observing — this session is read-only.`);
+      throw new Error(`${action} is not available while observing — this session cannot speak.`);
     }
   }
 
@@ -641,9 +658,14 @@ export class CockpitSession {
    * `max_completion_tokens: null` is a value, not an omission: it is how the
    * ceiling is taken off. `JSON.stringify` keeps nulls and drops undefineds,
    * which is exactly the distinction the wire needs.
+   *
+   * Available while observing, and that is the point of the whole feature: the
+   * demo is called from a phone and driven from a laptop, and the laptop is an
+   * observer. "Two cockpits pointed at one agent cannot fight" above stopped
+   * being hypothetical the day this opened up — a caller and a watcher arming
+   * the same agent is now the ORDINARY case, and last write wins per field.
    */
   async setChaos(patch: Partial<ChaosInjections>): Promise<void> {
-    this.assertWritable('Chaos injection');
     // Normalised before it is measured, not after: an `undefined` counts toward
     // `Object.keys().length` and then disappears in `JSON.stringify`, so the
     // unfiltered patch can be non-empty and the published payload empty.
@@ -658,7 +680,7 @@ export class CockpitSession {
   }
 
   async setMicrophoneEnabled(enabled: boolean): Promise<void> {
-    this.assertWritable('The microphone');
+    this.assertAudioWritable('The microphone');
     await this.room.localParticipant.setMicrophoneEnabled(enabled);
   }
 

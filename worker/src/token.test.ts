@@ -213,7 +213,7 @@ describe('the observer path', () => {
     expect(granted.sub).toMatch(/^observer-[A-Za-z0-9]{8}$/);
   });
 
-  it('can listen and nothing else', async () => {
+  it('can listen, can arm chaos, and nothing else', async () => {
     await poll([room('cockpit-abc123')]);
     const { claims: granted } = await mint({ observe: 'cockpit-abc123' });
 
@@ -222,17 +222,42 @@ describe('the observer path', () => {
      * cannot fail on an *extra* grant is not testing its own title:
      * `roomAdmin`, `hidden`, `recorder` or a `canPublishSources` list — which
      * the server reads as permission to publish those sources regardless of
-     * `canPublish: false` — would all slip past a subset match.
+     * `canPublish: false` — would all slip past a subset match. The strictness
+     * matters more now, not less: this token deliberately grants one publishing
+     * capability, so the test has to prove it did not acquire a second.
      */
     expect(granted.video).toEqual({
       roomJoin: true,
       room: 'cockpit-abc123',
       canSubscribe: true,
-      // The two that matter: a publishing observer could speak to the agent or
-      // forge frames on the chaos-control topic in a call it is only watching.
+      // No microphone. The one grant here that is a security boundary.
       canPublish: false,
-      canPublishData: false,
+      // Chosen deliberately: the demo is driven from the laptop while the
+      // caller is on their phone, and the cockpit publishes only on the
+      // `cockpit-control` topic. Without it the chaos panel is inert.
+      canPublishData: true,
     });
+  });
+
+  /*
+   * Split out of the `toEqual` above and asserted in its own right, because it
+   * is now the ONLY thing between an observer and the call's audio. Before the
+   * data grant, `canPublishData: false` was a second lock on the same door; a
+   * regression here no longer has a backstop, so it gets a test that names it.
+   */
+  it('is never handed the microphone, whatever else it may publish', async () => {
+    await poll([room('cockpit-abc123')]);
+    const { claims: granted } = await mint({ observe: 'cockpit-abc123' });
+
+    expect(granted.video.canPublish).toBe(false);
+    /*
+     * Absent, not merely empty. LiveKit reads `canPublishSources` as permission
+     * to publish exactly those sources REGARDLESS of `canPublish: false`, so a
+     * list containing `microphone` would silently undo the line above — and a
+     * present-but-empty list is a shape nobody meant to write either.
+     */
+    expect(granted.video).not.toHaveProperty('canPublishSources');
+    expect(Object.keys(granted.video)).not.toContain('canPublishSources');
   });
 
   it('observes a sip call as readily as a browser one', async () => {
@@ -336,8 +361,11 @@ describe('observing by handle', () => {
       room: SIP_CALLER,
       canSubscribe: true,
       canPublish: false,
-      canPublishData: false,
+      canPublishData: true,
     });
+    // The audio boundary, asserted on this path too — the two mint sites share
+    // a function today and a divergence here would be invisible otherwise.
+    expect(granted.video).not.toHaveProperty('canPublishSources');
   });
 
   it('observes a browser call by handle just as readily', async () => {

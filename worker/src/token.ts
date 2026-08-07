@@ -165,14 +165,34 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
 }
 
 /**
- * A read-only seat in somebody else's call.
+ * A seat in somebody else's call: every instrument, the chaos switches, and no
+ * voice.
  *
- * `canPublish: false` and `canPublishData: false` are the whole security model
- * here, not defaults worth tidying away. /api/active publishes a handle for
- * every live call, so anyone can ask to observe one; a publishing observer could
- * talk to the agent over the caller's own audio, or forge frames on the
- * `cockpit-control` topic and drive the chaos toggles of a call they are merely
- * watching. Subscribe-only makes the seat exactly as powerful as a window.
+ * `canPublish: false` is the whole security model here, and it is the only
+ * grant on this token that is load-bearing. An observer may NOT publish audio —
+ * it has no microphone, cannot speak to the agent, and cannot be heard by the
+ * caller. That line is absolute, and it is what keeps a watcher a watcher.
+ *
+ * `canPublishData: true` is deliberate and was chosen by the owner over the
+ * alternative. The demo's natural flow is a caller on their PHONE with the
+ * laptop open beside them, and the laptop session is an observer: without this
+ * grant the chaos panel — the whole point of the demo — is inert in the one
+ * arrangement it is most often used in. The cockpit publishes only on the
+ * `cockpit-control` topic, and the agent validates every control payload and
+ * ignores anything it does not recognise, so the grant buys exactly one
+ * capability: arming the injections of a call you are watching.
+ *
+ * The blast radius is understood and accepted: a visitor can deliberately slow
+ * down a live demo call. No data is exposed by it, no audio is injected by it,
+ * and a working demo was preferred to a locked-down one. If that trade ever
+ * stops being acceptable the fix is a pairing or consent step in front of the
+ * observer token — not a quiet downgrade of this line, which would break the
+ * Loom's scripted flow without saying so.
+ *
+ * The two grants are asserted separately in the tests, `canPublishSources`
+ * among them: LiveKit reads a source list as permission to publish those
+ * sources REGARDLESS of `canPublish: false`, so an accidental one would hand an
+ * observer the microphone this comment promises it does not have.
  *
  * The identity prefix is load-bearing too: /api/active counts only participants
  * that do NOT start with `observer-`, so watchers never make a call look busier
@@ -201,8 +221,10 @@ async function mintObserver(roomName: string, env: Env): Promise<Response> {
     roomJoin: true,
     room: roomName,
     canSubscribe: true,
+    // No microphone, ever. See above.
     canPublish: false,
-    canPublishData: false,
+    // The `cockpit-control` topic, and nothing an observer can reach beyond it.
+    canPublishData: true,
   });
 
   return json({

@@ -35,8 +35,17 @@ import { useActiveRooms } from '../useActiveRooms';
 import { useCockpit } from '../useCockpit';
 import { autoJoinTarget, linkRoomGone } from './liveJoin';
 
-const OBSERVER_CHAOS_NOTE =
-  'Chaos injection is caller-side — this session is read-only. What is armed still shows.';
+/**
+ * The panel is live here, and it is not the only one pointed at this agent —
+ * the caller has the same four switches. The contract is last-write-wins per
+ * field, so the honest caption is about precedence rather than about ownership.
+ *
+ * It replaces "Chaos injection is caller-side — this session is read-only",
+ * which was true until observer tokens were granted `canPublishData` and is the
+ * kind of stale copy that makes a working control look broken.
+ */
+export const OBSERVER_CHAOS_NOTE =
+  'Armed from here or by the caller — the agent applies whichever came last.';
 
 export function LiveView({ room: preferred }: { room: string | null }) {
   const cockpit = useCockpit();
@@ -272,11 +281,16 @@ export function LiveView({ room: preferred }: { room: string | null }) {
           /* Transport is the caller's uplink, measured from the microphone they
              publish. An observer publishes nothing; see the note in HomeView. */
           live={false}
+          /* Interactive, exactly as on the caller's own session. The token
+             behind an observer carries `canPublishData`, so these publish on
+             `cockpit-control` down the same path the caller's do — what an
+             observer still cannot do is speak, and that is enforced by the
+             token rather than by this prop. */
           chaos={{
             request: cockpit.chaosRequest,
-            disabled: true,
+            disabled: false,
             note: OBSERVER_CHAOS_NOTE,
-            onChange: () => {},
+            onChange: (patch) => void cockpit.setChaos(patch),
           }}
         />
       ) : null}
@@ -323,7 +337,10 @@ function Holding({
       <p className="holding__lede">
         {armed
           ? 'This page joins the next one automatically — leave it open.'
-          : 'Read-only view — no microphone, no controls, and audio starts muted.'}
+          : /* Not "no controls": the chaos switches work from here. The two
+               things that are genuinely withheld are the microphone and, until
+               asked for, the sound. */
+            'No microphone and audio starts muted — but the chaos switches work from here.'}
       </p>
 
       {/*

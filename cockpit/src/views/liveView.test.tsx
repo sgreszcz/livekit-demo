@@ -36,7 +36,7 @@ describe('LiveView — holding state', () => {
     expect(markup).toContain('Watch the next call');
     // And nothing is being observed yet: no instruments, no audio bar.
     expect(markup).not.toContain('observer-bar');
-    expect(markup).not.toContain('Observing · read-only');
+    expect(markup).not.toContain('Observing · mic off');
   });
 
   it('asks exactly once, with one button and nothing to dismiss', () => {
@@ -51,7 +51,14 @@ describe('LiveView — holding state', () => {
 
   it('says what the page is in one calm line, claiming nothing untrue', () => {
     const markup = renderToStaticMarkup(<LiveView room={null} />);
-    expect(markup).toContain('Read-only view');
+    // What is actually withheld, and what is not. The lede used to promise "no
+    // controls", which stopped being true the day an observer could arm chaos —
+    // and a page that undersells its own switches is a page whose best feature
+    // nobody presses.
+    expect(markup).toContain('No microphone and audio starts muted');
+    expect(markup).toContain('the chaos switches work from here');
+    expect(markup).not.toContain('no controls');
+    expect(markup).not.toContain('Read-only');
     // The spoken greeting says no such thing, so neither may the page.
     expect(markup).not.toContain('told at the start');
   });

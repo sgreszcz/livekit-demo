@@ -124,8 +124,13 @@ All v1.3 fields are optional; consumers render "—" when absent.
 
 ## Observers (v1.2)
 
-A participant whose identity starts with `observer-` is a read-only viewer (subscribe
-only, no mic, no data publishing — enforced by its token grants). When one joins
+A participant whose identity starts with `observer-` is a viewer that can watch and
+arm chaos but never speak: its token grants `canSubscribe` and `canPublishData`, and
+`canPublish` is false, so it can post `cockpit-control` frames while remaining unable
+to publish audio into the call. (Chaos control was opened to observers deliberately:
+the natural demo flow is a caller on the phone driving the instruments from a laptop,
+and the blast radius of the grant is that someone can deliberately slow a demo call —
+no audio injection, no data exposure.) When one joins
 mid-call, the agent replays every envelope emitted so far, in original order,
 byte-identical, via `publish_data(..., destination_identities=[<observer>])` —
 **addressed to that observer only**, so the caller's own cockpit never receives

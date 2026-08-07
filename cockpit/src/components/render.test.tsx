@@ -578,18 +578,65 @@ describe('ChaosControl', () => {
     expect(markup).not.toContain('+1500 ms');
   });
 
-  it('shows the agent’s state, not its own, when read-only', () => {
-    const markup = render({ request: OFF, acked: ARMED, disabled: true, disabledNote: 'read-only' });
+  it('shows the agent’s state, not its own, when the switches are dead', () => {
+    const markup = render({ request: OFF, acked: ARMED, disabled: true, note: 'a replay' });
     assertRenders(markup);
 
     // Every switch dead...
     expect(markup.match(/disabled=""/g) ?? []).toHaveLength(12);
-    // ...and yet showing what is armed: an observer watching a degraded call
-    // must see which four positions are live.
+    // ...and yet showing what is armed: a viewer of a degraded call must see
+    // which four positions are live.
     expect(markup).toContain('>+800</button>');
     expect(markup).toContain('>Heavy</button>');
     expect(markup).toContain('>30</button>');
-    expect(markup).toContain('read-only');
+    expect(markup).toContain('a replay');
+  });
+
+  /*
+   * The observer's panel, which is the case this component was reshaped for: it
+   * is fully live, and it has still asked for nothing. `disabled` used to stand
+   * in for both — an enabled panel was one whose request could be trusted — and
+   * an observer breaks that equivalence.
+   */
+  it('shows the agent’s state on a live panel that has asked for nothing', () => {
+    const markup = render({ request: null, acked: ARMED, disabled: false });
+    assertRenders(markup);
+
+    // Live: not one switch is dead.
+    expect(markup).not.toContain('disabled=""');
+    // And reading the agent, not an off-state nobody chose. The regression this
+    // guards is four Off switches drawn over a call running under +800 ms.
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup.match(/aria-pressed="true"/g) ?? []).toHaveLength(4);
+    expect(markup).toContain('+800 ms');
+    expect(markup).toContain('30 tok');
+  });
+
+  it('hands the switches over the moment the watcher presses one', () => {
+    // Once this browser has asked for something, its own request is what the
+    // buttons read back — a control that snapped back to the agent's value
+    // between press and ack would feel broken.
+    const markup = render({
+      request: { ...OFF, llm_delay_ms: 400 },
+      acked: ARMED,
+      disabled: false,
+    });
+    expect(markup).toContain('>+400</button>');
+    // The readouts are unmoved: those are the agent's, always.
+    expect(markup).toContain('+800 ms');
+  });
+
+  it('lets a caption replace the standard copy on a live panel', () => {
+    // The observer's caption. The default speaks as though this browser were
+    // the only one at the switches, and on an observed call it is not.
+    const markup = render({
+      request: null,
+      acked: CHAOS_OFF,
+      disabled: false,
+      note: 'Armed from here or by the caller — the agent applies whichever came last.',
+    });
+    expect(markup).toContain('the agent applies whichever came last');
+    expect(markup).not.toContain('Nothing injected');
   });
 
   it('summarises how many injections the agent acknowledged', () => {
@@ -860,7 +907,7 @@ describe('ObserverBar', () => {
     );
     assertRenders(markup);
     expect(markup).toContain('Listen');
-    expect(markup).toContain('audio muted to prevent echo');
+    expect(markup).toContain('audio is muted to prevent echo');
     // Prominent: the filled control, because silence was a decision the visitor
     // did not make and cannot otherwise guess at.
     expect(markup).toContain('btn--primary');
@@ -872,21 +919,40 @@ describe('ObserverBar', () => {
     );
     assertRenders(markup);
     expect(markup).toContain('Mute audio');
-    expect(markup).toContain('audio on');
+    expect(markup).toContain('audio is on');
     expect(markup).not.toContain('muted to prevent echo');
   });
 
   it('says what the page is, in one line, in both states', () => {
     // Muting is an echo fix, not a consent mechanism — the transcript and every
-    // instrument stream whatever the speakers are doing — so the read-only
-    // framing cannot be conditional on the audio. One calm line, no dialog:
-    // this is a demo, and nothing may stand between a visitor and the
-    // instruments.
+    // instrument stream whatever the speakers are doing — so the framing cannot
+    // be conditional on the audio. One calm line, no dialog: this is a demo,
+    // and nothing may stand between a visitor and the instruments.
     for (const listening of [false, true]) {
       const markup = renderToStaticMarkup(
         <ObserverBar listening={listening} onToggle={() => {}} onStop={() => {}} />,
       );
-      expect(markup).toContain('Read-only view of a live call');
+      expect(markup).toContain('Watching a live call');
+    }
+  });
+
+  it('no longer calls the session read-only, because it is not', () => {
+    /*
+     * An observer can arm chaos, so this page CAN affect the call it is
+     * watching. "Read-only view of a live call" was the bar's opening claim and
+     * is now the most misleading sentence the page could carry — a visitor who
+     * relied on it would be wrong about the one thing the wording was for.
+     *
+     * What must survive is the audio half, which is still true and is the whole
+     * of what the session is barred from.
+     */
+    for (const listening of [false, true]) {
+      const markup = renderToStaticMarkup(
+        <ObserverBar listening={listening} onToggle={() => {}} onStop={() => {}} />,
+      );
+      expect(markup).not.toContain('Read-only');
+      expect(markup).not.toContain('read-only');
+      expect(markup).toContain('you can arm chaos from here');
     }
   });
 

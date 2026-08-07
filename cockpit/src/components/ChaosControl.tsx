@@ -14,9 +14,15 @@
  *     immediately, because a control that waits for a network round trip to
  *     move feels broken;
  *   - what the agent says is *live*, printed beside each label and taken only
- *     from its ack. That is the honest reading, and it is the only one an
- *     observer has — a read-only session never asked for anything, so its
- *     buttons render the agent's state instead of its own.
+ *     from its ack. That is the honest reading, and it is the only one a
+ *     session that has asked for nothing has — so those buttons render the
+ *     agent's state instead of an off-state nobody chose.
+ *
+ * An observer is now one of the browsers that can arm these, not merely one
+ * that can read them. Its panel is live, and until the watcher presses
+ * something it is also a panel with nothing of its own to show — which is why
+ * "has this browser asked for anything" and "are these switches enabled" are
+ * two different questions here.
  */
 
 import type { ChaosInjections } from '../telemetry/schema';
@@ -28,17 +34,23 @@ const DISABLED_NOTE = 'Available once you are in a live call — a replay is alr
 const MISSING = 'off';
 
 interface ChaosControlProps {
-  /** What this browser has requested. Ignored while `disabled`. */
-  request: ChaosInjections;
+  /**
+   * What this browser has requested, or null if it has not asked for anything.
+   * Ignored while `disabled`.
+   */
+  request: ChaosInjections | null;
   /** The agent's own account of what is armed, from its ack envelope. */
   acked: ChaosState;
   disabled: boolean;
   /**
-   * Replaces the disabled copy for callers whose reason is a different one — an
-   * observer is not looking at a finished recording, and telling them to wait
-   * for a live call would be advice they cannot act on.
+   * Replaces the caption, in whichever state the panel is in.
+   *
+   * It began as disabled-only copy, for panels whose reason for being dead was
+   * not the usual one. It now also covers the opposite case: an observer's
+   * panel is fully live, but the standard caption speaks as though this browser
+   * were the only one at the switches, and on an observed call it is not.
    */
-  disabledNote?: string;
+  note?: string;
   onChange: (patch: Partial<ChaosInjections>) => void;
 }
 
@@ -54,22 +66,20 @@ function ackedAsRequest(acked: ChaosState): ChaosInjections {
 
 const delayReadout = (ms: number): string => (ms > 0 ? `+${ms} ms` : MISSING);
 
-export function ChaosControl({
-  request,
-  acked,
-  disabled,
-  disabledNote,
-  onChange,
-}: ChaosControlProps) {
+export function ChaosControl({ request, acked, disabled, note, onChange }: ChaosControlProps) {
   /*
-   * A disabled panel shows the agent, an enabled one shows the operator.
+   * A panel shows the operator only once there IS an operator; otherwise it
+   * shows the agent.
    *
-   * Not a fallback — a deliberate swap. While observing, `request` is the
-   * untouched off-state of a browser that never published anything, and
-   * rendering it would draw four Off switches over a call that is at that
-   * moment running under +800 ms.
+   * Two ways to have no operator, and both must resolve the same way. A
+   * disabled panel — a replay, a finished call — never had one. An observer's
+   * panel is fully live and may still have none: it joined a call already in
+   * progress, and until the watcher presses something the only truth available
+   * is the agent's ack. Rendering an untouched off-state in either case would
+   * draw four Off switches over a call that is at that moment running under
+   * +800 ms, which is the specific lie this swap exists to prevent.
    */
-  const shown = disabled ? ackedAsRequest(acked) : request;
+  const shown = disabled ? ackedAsRequest(acked) : (request ?? ackedAsRequest(acked));
   const activeCount = activeInjectionCount(acked);
 
   return (
@@ -127,12 +137,13 @@ export function ChaosControl({
       />
 
       <p className="chaos__note">
-        {disabled
-          ? (disabledNote ?? DISABLED_NOTE)
-          : activeCount === 0
-            ? 'Nothing injected. Turn something up and watch the waterfall find it.'
-            : `Agent acknowledged ${activeCount} injection${activeCount === 1 ? '' : 's'}. ` +
-              'Turns that ran under one are flagged in the waterfall.'}
+        {note ??
+          (disabled
+            ? DISABLED_NOTE
+            : activeCount === 0
+              ? 'Nothing injected. Turn something up and watch the waterfall find it.'
+              : `Agent acknowledged ${activeCount} injection${activeCount === 1 ? '' : 's'}. ` +
+                'Turns that ran under one are flagged in the waterfall.')}
       </p>
     </div>
   );

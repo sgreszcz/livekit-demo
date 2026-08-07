@@ -19,10 +19,15 @@ import {
 } from './telemetry/store';
 
 /**
- * What this browser has asked for, which is not the same thing as what the
- * agent is doing — `state.chaos` is the agent's own account and the panel shows
- * both. Held here so a control reads back the moment it is pressed rather than
- * a round trip later.
+ * The base every request is merged onto — and, notably, NOT the initial value.
+ *
+ * `chaosRequest` is null until this browser touches a switch, because "I have
+ * asked for nothing" and "I have asked for everything off" are different claims
+ * and the panel renders them differently: a session that has asked for nothing
+ * shows the agent's state instead of its own. That distinction used to be
+ * carried by `disabled`, which was a fair proxy while the only session that had
+ * asked for nothing was a read-only one. An observer that can arm chaos is a
+ * live panel that has still asked for nothing, so the proxy had to go.
  */
 export const CHAOS_REQUEST_OFF: ChaosInjections = {
   llm_delay_ms: 0,
@@ -36,7 +41,7 @@ export type CockpitMode =
   | 'connecting'
   | 'live'
   | 'replay'
-  /** Watching someone else's call, read-only: no microphone, no chaos switch. */
+  /** Watching someone else's call: no microphone, but the chaos switches work. */
   | 'observing'
   | 'ended'
   | 'error';
@@ -50,8 +55,11 @@ export interface Cockpit {
   state: CockpitState;
   mode: CockpitMode;
   error: string | null;
-  /** What this browser has requested; the agent's ack lives on `state.chaos`. */
-  chaosRequest: ChaosInjections;
+  /**
+   * What this browser has requested, or null if it has not asked for anything
+   * yet; the agent's ack lives on `state.chaos`.
+   */
+  chaosRequest: ChaosInjections | null;
   micEnabled: boolean;
   /**
    * Observer sessions only: whether the watched call is audible here.
@@ -86,7 +94,7 @@ export function useCockpit(): Cockpit {
   const [state, dispatch] = useReducer(storeReducer, undefined, createCockpitState);
   const [mode, setMode] = useState<CockpitMode>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [chaosRequest, setChaosRequest] = useState<ChaosInjections>(CHAOS_REQUEST_OFF);
+  const [chaosRequest, setChaosRequest] = useState<ChaosInjections | null>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [listening, setListening] = useState(false);
   const [share, setShare] = useState<ShareResult | null>(null);
@@ -157,7 +165,9 @@ export function useCockpit(): Cockpit {
   const reset = useCallback(() => {
     beginSource();
     setMode('idle');
-    setChaosRequest(CHAOS_REQUEST_OFF);
+    // Back to "asked for nothing", not to "asked for off": the next source
+    // starts with a panel that reports the agent rather than this browser.
+    setChaosRequest(null);
     setMicEnabled(true);
   }, [beginSource]);
 
@@ -201,7 +211,8 @@ export function useCockpit(): Cockpit {
   }, [beginSource, callbacksFor]);
 
   /**
-   * Joins a call already in progress, read-only.
+   * Joins a call already in progress: no microphone, but the chaos switches on
+   * this session are live.
    *
    * Deliberately the same `beginSource()` / generation / AbortController
    * machinery as `startCall`, because the isolation it buys is exactly what an
@@ -273,15 +284,20 @@ export function useCockpit(): Cockpit {
   }, []);
 
   /**
-   * Both of these publish, and an observer session refuses to publish. The guard
-   * is here rather than only in the UI because the local state must not move
-   * either: a slider that shows +800 ms nobody asked the agent for, or a mic
-   * button that claims to have muted a microphone that does not exist, is an
-   * instrument reading something that never happened.
+   * Unguarded, deliberately: an observer session may arm chaos, and this is the
+   * flow the demo is built around — the owner calls from a phone and drives the
+   * instruments from the laptop, where the session is an observer.
+   *
+   * The guard that used to sit here refused the publish AND froze the local
+   * state, which is why removing it is a two-line change rather than one: a
+   * switch that moved without publishing would be an instrument reading
+   * something that never happened, and a publish without the switch moving
+   * would be a control that feels dead. Neither now applies — both happen.
+   *
+   * `toggleMic` keeps its guard. That asymmetry is the entire feature.
    */
   const setChaos = useCallback(async (patch: Partial<ChaosInjections>) => {
     const session = sessionRef.current;
-    if (session?.observing) return;
     // Optimistic locally, patch on the wire: the control reads back immediately
     // and the agent is told only what changed. The two are reconciled on screen
     // by the ack, which is the only thing that claims an injection is live.
@@ -290,10 +306,19 @@ export function useCockpit(): Cockpit {
     // read back a change the published message did not carry — an `undefined`
     // would otherwise overwrite local state and vanish from the JSON.
     const defined = definedInjections(patch);
-    setChaosRequest((current) => ({ ...current, ...defined }));
+    // The first press is what turns "asked for nothing" into a request, and it
+    // has to land on a full off-state rather than on a partial patch — the
+    // panel reads all four banks out of this object.
+    setChaosRequest((current) => ({ ...(current ?? CHAOS_REQUEST_OFF), ...defined }));
     await session?.setChaos(defined).catch(() => {});
   }, []);
 
+  /**
+   * Still refused on an observer session, and this is the one that matters: the
+   * token carries `canPublish: false`, so a mic button that claimed to have
+   * muted a microphone that does not exist would be an instrument reading a
+   * state the session cannot be in.
+   */
   const toggleMic = useCallback(async () => {
     const session = sessionRef.current;
     if (session?.observing) return;
@@ -303,8 +328,8 @@ export function useCockpit(): Cockpit {
   }, [micEnabled]);
 
   /**
-   * The mirror image of the guard on `toggleMic` and `setChaos`: those refuse on
-   * an observer session, this one refuses on everything else. A caller's audio
+   * The mirror image of the guard on `toggleMic`: that one refuses on an
+   * observer session, this one refuses on everything else. A caller's audio
    * is the call itself and has no business being muted from here — and a replay,
    * a debrief and an idle hero have no audio elements at all, so a switch that
    * moved would be an instrument reading a state that does not exist.
