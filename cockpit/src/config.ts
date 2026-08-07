@@ -15,11 +15,11 @@ const numberOverride = env.VITE_PHONE_NUMBER?.trim();
 const displayOverride = env.VITE_PHONE_DISPLAY?.trim();
 
 /** E.164, digits only after the plus — the string a `tel:` link dials. */
-export const PHONE_E164: string = numberOverride || '+447782684287';
+export const PHONE_E164: string = numberOverride || '+442046527116';
 
 /** The same number, grouped for reading and for dialling by hand. */
-export const PHONE_DISPLAY: string = displayOverride || numberOverride || '+44 7782 684 287';
+export const PHONE_DISPLAY: string = displayOverride || numberOverride || '+44 20 4652 7116';
 
 export const SITE_URL = 'https://agentmaker.io';
 
-export const REPO_URL: string = env.VITE_REPO_URL ?? 'https://github.com/sgreszcz/glass-cockpit';
+export const REPO_URL: string = env.VITE_REPO_URL ?? 'https://github.com/sgreszcz/livekit-demo';
