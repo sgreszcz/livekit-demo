@@ -36,8 +36,17 @@ export interface ActiveSnapshot {
 // so `_` and `+` are legitimate. Must match the worker's token.ts pattern.
 const OBSERVABLE_ROOM = /^(sip-)?cockpit-[A-Za-z0-9+_-]{1,60}$/;
 
+/**
+ * The opaque handle the Worker now publishes instead of a room name — 16
+ * lowercase hex, mirroring `ROOM_ID` in the Worker's `rooms.ts`. Names stopped
+ * being sent because a SIP room name carries the caller's phone number; the
+ * handle is what `/api/token` accepts in its place. A name is still accepted
+ * here so a cached page from before that change keeps working.
+ */
+const ROOM_HANDLE = /^[0-9a-f]{16}$/;
+
 export function isObservableRoom(name: string): boolean {
-  return typeof name === 'string' && OBSERVABLE_ROOM.test(name);
+  return typeof name === 'string' && (ROOM_HANDLE.test(name) || OBSERVABLE_ROOM.test(name));
 }
 
 /**
@@ -91,13 +100,16 @@ const isCount = (value: unknown): value is number =>
 
 function parseRoom(value: unknown): ActiveRoom | null {
   if (!isRecord(value)) return null;
-  if (typeof value.room !== 'string' || !isObservableRoom(value.room)) return null;
+  // `room_id` is the current field; `room` is what the Worker sent before room
+  // names were withheld, and is still read so a stale tab is not blinded.
+  const identifier = typeof value.room_id === 'string' ? value.room_id : value.room;
+  if (typeof identifier !== 'string' || !isObservableRoom(identifier)) return null;
   if (value.entry !== 'sip' && value.entry !== 'browser') return null;
   if (!isCount(value.num_participants)) return null;
   if (!isCount(value.created_at)) return null;
 
   return {
-    room: value.room,
+    room: identifier,
     entry: value.entry,
     numParticipants: value.num_participants,
     createdAt: value.created_at,

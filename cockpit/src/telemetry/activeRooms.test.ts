@@ -297,3 +297,46 @@ it('accepts a real SIP room name — caller number embedded with _ and +', () =>
   expect(snapshot?.rooms).toHaveLength(1);
   expect(isObservableRoom(DRAMA_SIP_ROOM)).toBe(true);
 });
+
+describe('opaque room handles', () => {
+  /**
+   * Regression: the Worker stopped sending `room` (a SIP room name carries the
+   * caller's phone number) and began sending an opaque `room_id`. The parser
+   * still required `room`, so every live call was dropped and the LIVE card
+   * never appeared — caught only by a real phone call, not by either suite.
+   */
+  it('accepts the opaque room_id the Worker publishes', () => {
+    const snapshot = parseActiveResponse(
+      {
+        rooms: [
+          { room_id: '14f4744035f4791d', entry: 'sip', num_participants: 1, created_at: 1786102957 },
+        ],
+        degraded: false,
+        generated_at: 1786102976,
+      },
+      1786102976_000,
+    );
+    expect(snapshot?.rooms).toHaveLength(1);
+    expect(snapshot?.rooms[0]?.room).toBe('14f4744035f4791d');
+  });
+
+  it('still accepts a legacy room name so a stale tab is not blinded', () => {
+    const snapshot = parseActiveResponse(
+      {
+        rooms: [
+          { room: 'cockpit-demo01', entry: 'browser', num_participants: 2, created_at: 1786102957 },
+        ],
+        degraded: false,
+        generated_at: 1786102976,
+      },
+      1786102976_000,
+    );
+    expect(snapshot?.rooms[0]?.room).toBe('cockpit-demo01');
+  });
+
+  it('rejects a handle that is not 16 hex characters', () => {
+    expect(isObservableRoom('14f4744035f4791')).toBe(false);
+    expect(isObservableRoom('14F4744035F4791D')).toBe(false);
+    expect(isObservableRoom('../../etc/passwd')).toBe(false);
+  });
+});
