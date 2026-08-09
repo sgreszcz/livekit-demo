@@ -24,6 +24,7 @@ import { error, methodNotAllowed, tooManyRequests } from './http';
 import { handleMetricsGet } from './metrics';
 import { check, clientKey, DEBRIEF_WINDOWS, TOKEN_WINDOWS } from './ratelimit';
 import { handleToken } from './token';
+import { runWarmup } from './warmup';
 
 const DEBRIEF_ITEM = /^\/api\/debrief\/([^/]+)$/;
 
@@ -101,5 +102,39 @@ export default {
     }
 
     return error(404, 'No such endpoint');
+  },
+
+  /**
+   * The keep-warm cron. See warmup.ts for what it does and why it exists.
+   *
+   * This Worker is the scheduler because it is the only piece of the deployment that is
+   * already running somewhere reliable — the alternative was a cron on a laptop, which is
+   * a warm agent exactly as often as the laptop is open.
+   *
+   * `runWarmup` is awaited rather than handed to `ctx.waitUntil`. The whole ping is two
+   * short LiveKit round trips with a hard request timeout, so there is nothing to overlap
+   * with; awaiting means the invocation's duration is the ping's duration, which is the
+   * number to look at if these ever start timing out.
+   *
+   * It never rejects — every failure is a return value — so this handler cannot fail the
+   * cron invocation. The try/catch is for the case that contradicts that sentence: an
+   * error thrown before `runWarmup`'s own guards, by a future edit or by constructing the
+   * SDK client. A failed cron run buys nothing over a logged one, and a cron reporting
+   * failures is a cron somebody eventually disables.
+   */
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    // Declared and unused. `ctx.waitUntil` is the thing not being reached for here, per
+    // the note above, and naming it is cheaper than leaving a reader to wonder whether
+    // the handler simply never had access to it.
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    try {
+      const outcome = await runWarmup(env);
+      console.log(`warm-up: ${outcome}`);
+    } catch (cause) {
+      console.log(`warm-up: threw unexpectedly: ${String(cause)}`);
+    }
   },
 } satisfies ExportedHandler<Env>;

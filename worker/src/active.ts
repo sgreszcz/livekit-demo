@@ -547,6 +547,36 @@ export async function isLiveRoom(env: Env, name: string, api?: RoomsApi): Promis
 }
 
 /**
+ * Is anyone on a call right now? The keep-warm ping's skip condition.
+ *
+ * Asked by the cron in warmup.ts, and answered from the same memoized snapshot
+ * /api/active serves, so the ping costs at most one `listRooms` every ten
+ * minutes and usually costs nothing at all — a front page polling in the same
+ * four-second window has already paid for it.
+ *
+ * `degraded` is reported rather than folded into `live`, because the two
+ * failure directions are not symmetric and the caller is the one who knows
+ * which it prefers. A degraded snapshot means "we could not find out"; treating
+ * that as "a call is live" would suppress the ping for as long as LiveKit's
+ * room listing is unhappy, which is exactly when a cold container is most
+ * likely and least excusable. See `runWarmup` for the choice it makes.
+ *
+ * Note what "live" counts, since it is inherited rather than restated here: a
+ * room only reaches this snapshot if its name is one of ours, it is younger than
+ * MAX_ROOM_AGE_SECONDS, and a real caller — not an observer, not an agent — is
+ * still in it. So an abandoned tab or a watched-after-the-fact room does not
+ * suppress warm-ups, which is the behaviour worth having: nobody is talking to
+ * the agent, so nothing is keeping it warm.
+ */
+export async function liveCallStatus(
+  env: Env,
+  api?: RoomsApi,
+): Promise<{ live: boolean; degraded: boolean }> {
+  const internal = await cachedSnapshot(env, api);
+  return { live: internal.rooms.length > 0, degraded: internal.degraded };
+}
+
+/**
  * GET /api/active. `api` is injected by tests so they never touch the network.
  */
 export async function handleActiveGet(env: Env, api?: RoomsApi): Promise<Response> {

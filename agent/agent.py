@@ -30,6 +30,7 @@ from livekit.agents import (
     CloseEvent,
     ConversationItemAddedEvent,
     JobContext,
+    JobRequest,
     MetricsCollectedEvent,
     RunContext,
     SpeechCreatedEvent,
@@ -75,6 +76,21 @@ TTS_MODEL = os.getenv("COCKPIT_TTS_MODEL", "cartesia/sonic-3")
 # Chaos mode's "slow model" swap. Read here rather than in chaos.py because module-level
 # env reads in an imported module would run before load_dotenv() below.
 SLOW_LLM_MODEL = os.getenv("COCKPIT_SLOW_LLM_MODEL", DEFAULT_SLOW_LLM_MODEL)
+
+# Rooms named `warmup-<random>` are not calls. They are the keep-warm ping described in
+# worker/src/warmup.ts, and they exist for one reason: LiveKit does not answer an inbound
+# SIP call until an agent joins the room, and LiveKit Cloud lets an idle agent container
+# stop. Measured on the live demo number, a cold container meant twelve seconds of
+# ringing — eleven of them spent booting — against three seconds warm. The plan offers no
+# min-replica setting, so the container is kept awake by periodically giving it a job to
+# refuse.
+#
+# The prefix is the whole contract between the two halves, and it is chosen to match
+# NOTHING else in the system: `classifyEntry` in worker/src/active.ts recognises only
+# `sip-cockpit-` and `cockpit-`, so a warm-up room can never be listed as a live call,
+# and `OBSERVABLE_ROOM` in worker/src/token.ts demands a `cockpit-` prefix, so no
+# observer token can ever be minted against one. Both are asserted in the worker tests.
+WARMUP_ROOM_PREFIX = "warmup-"
 
 INSTRUCTIONS = """\
 You are the guide for "Glass Cockpit", a live demonstration of a LiveKit voice agent \
@@ -472,11 +488,83 @@ def _close_reason(reason: Any) -> str:
     return str(getattr(reason, "value", reason))
 
 
+def is_warmup_room(room_name: str) -> bool:
+    """Is this job a keep-warm ping rather than a call with a person on it?
+
+    See ``WARMUP_ROOM_PREFIX``. Read against the *dispatched job's* room name, which
+    is available before ``ctx.connect()`` — the point of a warm-up is to cost nothing,
+    and connecting to find out whether we needed to connect would defeat it.
+    """
+    return room_name.startswith(WARMUP_ROOM_PREFIX)
+
+
+async def on_request(req: JobRequest) -> None:
+    """Answer a dispatch offer: reject warm-up pings, accept real calls.
+
+    This is the cheap half of the keep-warm scheme, and it is deliberately *here* rather
+    than only in the entrypoint. Rejecting at request time is answered by the worker
+    process that is already registered, so the container has been woken — which is the
+    entire product of a warm-up — but no job process is ever taken out of the pool, no
+    ``JobContext`` is built, no ``on_session_end`` hook fires, and, critically, no agent
+    session is started. Agent session minutes are metered; a warm-up that started one
+    every ten minutes would cost far more than the cold starts it exists to prevent.
+
+    ``terminate=True`` is what makes this safe to do on a schedule. The SDK sends it as
+    ``availability.terminate``, documented as "the job will not be assigned to another
+    worker" — so a rejected warm-up is dropped, not re-offered around the fleet. The
+    default-reject path the worker falls back to when a request handler answers nothing
+    uses ``terminate=False`` and *would* be re-offered, which is why this always answers
+    explicitly rather than returning.
+
+    Accepting is the framework's own default behaviour for every other room, restated
+    here because supplying ``on_request`` replaces that default outright.
+    """
+    if is_warmup_room(req.room.name):
+        # One line per ping, at INFO, so `lk agent logs` shows the keep-warm schedule
+        # actually running — a cron that silently stopped firing would otherwise look
+        # exactly like a cold start nobody could explain.
+        logger.info("warm-up ping (%s): rejecting job, container is now warm", req.room.name)
+        await req.reject(terminate=True)
+        return
+    await req.accept()
+
+
 server = AgentServer()
 
 
-@server.rtc_session()
+@server.rtc_session(on_request=on_request)
 async def entrypoint(ctx: JobContext) -> None:
+    # The belt to on_request's braces, and it must come before everything: no chaos
+    # controller, no publisher, no debrief uploader, no AgentSession, no participant
+    # wait. A warm-up job should never reach here — on_request rejects it before a
+    # process is ever taken — but "should never" is not a thing to leave a session's
+    # worth of metered pipeline behind.
+    #
+    # ctx.shutdown(), NOT a bare `return`. This is the one dangerous-looking detail in
+    # the whole change, and it is the opposite of what it looks like. Returning from the
+    # entrypoint without having called connect() or shutdown() does not end the job: the
+    # supervising coroutine in the SDK's job process awaits an internal shutdown future
+    # that only room disconnection, an explicit shutdown, a worker drain or a raised
+    # exception ever resolves. A clean return resolves none of them, so the process hangs
+    # forever holding a worker slot and reporting JS_RUNNING — a far worse cost bug than
+    # the cold start this change exists to fix. The SDK even logs a warning for exactly
+    # this shape ("completed without establishing a connection or performing a proper
+    # shutdown") and then waits anyway.
+    #
+    # shutdown() resolves that future, the finalization sequence runs, the process exits
+    # 0, and the worker maps exit code 0 to JobStatus.SUCCESS → JS_SUCCESS. There is no
+    # retry or re-dispatch path in the SDK for a job that has already launched, so a
+    # warm-up that lands here is finished, not retried.
+    #
+    # Both guards read `job.room.name` — the name LiveKit dispatched us against — rather
+    # than `ctx.room.name`, so the two are provably testing the same field. A warm-up
+    # room name is a random suffix and carries no caller number, so it is logged raw.
+    job_room = ctx.job.room.name
+    if is_warmup_room(job_room):
+        logger.info("warm-up ping (%s): job landed, shutting down without a session", job_room)
+        ctx.shutdown(reason="warmup")
+        return
+
     chaos = ChaosController()
     models = PipelineModels(stt=STT_MODEL, llm=LLM_MODEL, tts=TTS_MODEL)
     store = TurnStore(
