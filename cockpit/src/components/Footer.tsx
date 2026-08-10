@@ -29,7 +29,7 @@ const LINKS: readonly FooterLink[] = [
   { href: REPO_URL, label: 'GitHub', external: true },
   { href: LINKEDIN_URL, label: 'LinkedIn', external: true },
   { href: `mailto:${CONTACT_EMAIL}`, label: CONTACT_EMAIL, external: false },
-  { href: GRAFANA_PUBLIC_URL, label: 'Fleet dashboard', external: true },
+  { href: GRAFANA_PUBLIC_URL, label: 'Grafana Dashboard', external: true },
 ];
 
 export function Footer() {
