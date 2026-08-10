@@ -17,8 +17,28 @@
     {
       "binding": "DEBRIEFS",
       "id": "e9d5889872254b0a801840ea2726d7aa"
+    },
+    // Month-to-date agent minutes, one key per UTC month. Its own namespace on
+    // purpose: /api/metrics lists DEBRIEFS and reads every key it finds, so a
+    // counter stored there would count as an unreadable call on the public
+    // dashboard and spend one of that endpoint's 200 reads. See src/alerts.ts.
+    {
+      "binding": "USAGE",
+      "id": "f306cef2d75b46f1bea62aa870bd7421"
     }
   ],
+
+  // Cloudflare Email Sending. Alerts go from alerts@agentmaker.io (onboarded
+  // domain) to admin@agentmaker.io (verified destination); both are fixed in
+  // src/alerts.ts rather than configurable, because there is exactly one reader.
+  //
+  // `destination_address` pins that second half at the platform. The route that
+  // reaches this binding is authenticated by a secret in a URL, so the failure
+  // worth planning for is that secret leaking — and a binding that can only ever
+  // deliver to one verified address makes the worst case spam in a mailbox we
+  // own rather than an open relay. App code says the same thing; this is the
+  // half that keeps saying it if the app code is wrong.
+  "send_email": [{ "name": "EMAIL", "destination_address": "admin@agentmaker.io" }],
 
   "routes": [{ "pattern": "cockpit.agentmaker.io", "custom_domain": true }],
 
@@ -42,11 +62,18 @@
   "vars": {
     // Public: handed to the browser alongside the signed token.
     // Override per-environment; the API key/secret are secrets, not vars.
-    "LIVEKIT_URL": "wss://livekik-rbhzpdof.livekit.cloud"
+    "LIVEKIT_URL": "wss://livekik-rbhzpdof.livekit.cloud",
+
+    // Agent minutes at which to mail, against a 1000-minute plan period — the
+    // same budget the keep-warm window above is sized against. Set to an empty
+    // string to turn minute alerts off.
+    "USAGE_ALERT_MINUTES": "500,800"
   },
 
   // Secrets, set with `npx wrangler secret put <NAME>` — never in this file:
-  //   LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEBRIEF_TOKEN
+  //   LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEBRIEF_TOKEN, ALERT_WEBHOOK_KEY
+  // ALERT_WEBHOOK_KEY is the `?key=` in the Twilio usage-trigger callback URL;
+  // that URL is the only credential on /api/alerts/twilio, so it is a secret.
   "observability": {
     "enabled": true
   }

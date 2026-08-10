@@ -511,6 +511,179 @@ describe('handleDebriefGet: a share link is a credential', () => {
   });
 });
 
+/**
+ * The final POST is the only thing that feeds the spend ledger, and the branch
+ * it feeds from is the bearer-authenticated one. That is not a detail: anyone on
+ * the internet can POST here — the browser path is deliberate — so an anonymous
+ * body reaching the emailer would be an email amplifier with a public URL.
+ */
+describe('handleDebriefPost: the spend ledger hook', () => {
+  /** The debrief fake, plus a USAGE namespace and a `defer` that can be awaited. */
+  function ledgerKv(vars: Record<string, unknown> = {}) {
+    const kv = fakeKv();
+    const usage = new Map<string, string>();
+    const usagePuts: string[] = [];
+    const deferred: Promise<unknown>[] = [];
+
+    const env = {
+      ...(kv.env as unknown as Record<string, unknown>),
+      USAGE: {
+        async get(key: string) {
+          return usage.get(key) ?? null;
+        },
+        async put(key: string, value: string) {
+          usage.set(key, value);
+          usagePuts.push(key);
+        },
+      },
+      ...vars,
+    } as unknown as Env;
+
+    return {
+      env,
+      usage,
+      usagePuts,
+      defer: (work: Promise<unknown>) => {
+        deferred.push(work);
+      },
+      settle: () => Promise.all(deferred),
+    };
+  }
+
+  /**
+   * A call with a readable clock. `debriefBody`'s meta carries no `started_at`,
+   * which `summariseCall` reports as a null duration — right for the fleet
+   * numbers, useless for exercising minutes.
+   */
+  function timedBody() {
+    return debriefBody({ meta: { room: 'cockpit-demo01', started_at: 1723000000 } });
+  }
+
+  it('records an agent-authenticated final call in the month the call ended in', async () => {
+    const ledger = ledgerKv();
+    const response = await handleDebriefPost(post(timedBody(), AGENT), ledger.env, ledger.defer);
+    expect(response.status).toBe(201);
+
+    await ledger.settle();
+    // `ended_at` is 1723000049.5 — 7 August 2024 — and NOT whenever this test
+    // happens to run. The month a call belongs to is the month it ended in.
+    expect(ledger.usagePuts).toEqual(['usage_2024-08']);
+    const stored = JSON.parse(ledger.usage.get('usage_2024-08')!);
+    expect(stored.calls).toBe(1);
+    // 30.5s: the last envelope plus the idle-tail grace, not `ended_at`.
+    expect(stored.seconds).toBeCloseTo(30.5, 5);
+    // Which LiveKit bills as a whole minute.
+    expect(stored.billable_minutes).toBe(1);
+    expect(stored.recent_call_ids).toEqual(['RM_demo0001']);
+  });
+
+  it('ledgers a call that ended a second before the month rolled over into that month', async () => {
+    // 23:59:59 UTC on the last of August. The deferred work could run in
+    // September — a slow isolate, a retried upload — and stamping it with the
+    // processing time would move a month's worth of minutes across the boundary
+    // one call at a time.
+    const ledger = ledgerKv();
+    const endedAt = Date.UTC(2026, 7, 31, 23, 59, 59) / 1000;
+    await handleDebriefPost(
+      post(
+        debriefBody({
+          meta: { room: 'cockpit-demo01', started_at: endedAt - 40 },
+          ended_at: endedAt,
+          messages: [{ v: 1, type: 'state', ts: endedAt - 10, payload: {} }],
+        }),
+        AGENT,
+      ),
+      ledger.env,
+      ledger.defer,
+    );
+
+    await ledger.settle();
+    expect(ledger.usagePuts).toEqual(['usage_2026-08']);
+  });
+
+  it('does not count a retried final upload twice', async () => {
+    // The agent retries a final POST it got no answer to. Same call, same id.
+    const ledger = ledgerKv();
+    for (let i = 0; i < 3; i += 1) {
+      const response = await handleDebriefPost(post(timedBody(), AGENT), ledger.env, ledger.defer);
+      expect(response.status).toBe(201);
+      // Settled between attempts: a retry follows a failed attempt, it does not
+      // race one, and interleaving them here would be testing the KV race this
+      // deliberately does not try to win.
+      await ledger.settle();
+    }
+
+    expect(ledger.usagePuts).toEqual(['usage_2024-08']);
+    expect(JSON.parse(ledger.usage.get('usage_2024-08')!)).toMatchObject({
+      calls: 1,
+      billable_minutes: 1,
+    });
+  });
+
+  it('does not touch USAGE or send anything on an ANONYMOUS post', async () => {
+    // The amplifier guard. A public route that sends email on demand is a public
+    // route that sends email on demand.
+    const ledger = ledgerKv({
+      USAGE_ALERT_MINUTES: '1',
+      EMAIL: {
+        send() {
+          throw new Error('an anonymous post reached the emailer');
+        },
+      },
+    });
+
+    const response = await handleDebriefPost(post(timedBody()), ledger.env, ledger.defer);
+    expect(response.status).toBe(201);
+    await ledger.settle();
+    expect(ledger.usagePuts).toHaveLength(0);
+  });
+
+  it('does not touch USAGE on a checkpoint PUT', async () => {
+    // A checkpoint is a call still running. Metering it here would count the
+    // same minutes again when the final POST lands.
+    const ledger = ledgerKv();
+    const response = await handleDebriefPut(put(timedBody(), AGENT), ledger.env);
+    expect(response.status).toBe(200);
+    await ledger.settle();
+    expect(ledger.usagePuts).toHaveLength(0);
+  });
+
+  it('does not touch USAGE for a call that named no id', async () => {
+    const ledger = ledgerKv();
+    const body = JSON.stringify({ meta: {}, ended_at: 1, messages: [envelope('state')] });
+    await handleDebriefPost(post(body, AGENT), ledger.env, ledger.defer);
+    await ledger.settle();
+    expect(ledger.usagePuts).toHaveLength(0);
+  });
+
+  it('still answers 201 when the alert email throws', async () => {
+    // The upload is a recording and is unrecoverable; the email is a courtesy.
+    const ledger = ledgerKv({
+      USAGE_ALERT_MINUTES: '1',
+      EMAIL: {
+        async send() {
+          throw new Error('smtp is having a day');
+        },
+      },
+    });
+
+    const response = await handleDebriefPost(post(timedBody(), AGENT), ledger.env, ledger.defer);
+    expect(response.status).toBe(201);
+    await expect(ledger.settle()).resolves.toBeDefined();
+    // The minutes were still written, and the threshold still marked.
+    expect(ledger.usagePuts).toHaveLength(1);
+    expect(JSON.parse([...ledger.usage.values()][0]).alerted['1']).toBeGreaterThan(0);
+  });
+
+  it('does nothing at all when no defer is supplied', async () => {
+    const ledger = ledgerKv();
+    const response = await handleDebriefPost(post(timedBody(), AGENT), ledger.env);
+    expect(response.status).toBe(201);
+    await ledger.settle();
+    expect(ledger.usagePuts).toHaveLength(0);
+  });
+});
+
 describe('validate: redaction scrubs by shape, not by field name', () => {
   it('finds a number in a field nobody thought to list', () => {
     // The old scrub rewrote exactly `meta.room` and the `call_meta` payload's

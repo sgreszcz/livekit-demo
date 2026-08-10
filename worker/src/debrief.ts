@@ -39,8 +39,10 @@
  *    through the public share route. Checkpoints are telemetry, not artefacts.
  */
 
+import { recordCallUsage } from './alerts';
 import type { Env } from './env';
 import { error, json, randomId, timingSafeEqual } from './http';
+import { summariseCall } from './metrics';
 import { redactDeep } from './rooms';
 
 export const MAX_BODY_BYTES = 256 * 1024;
@@ -443,7 +445,23 @@ export async function handleDebriefPut(request: Request, env: Env): Promise<Resp
   return json({ ok: true, in_progress: true });
 }
 
-export async function handleDebriefPost(request: Request, env: Env): Promise<Response> {
+/**
+ * Somewhere to put work that must outlive the response — `ctx.waitUntil`, wired
+ * in index.ts.
+ *
+ * Optional at the call site, and absent means the work is not done at all. The
+ * router always supplies one; the tests that pass nothing are the ones that are
+ * about validation rather than about the ledger, and making them thread a
+ * context they do not use would be noise. The wiring itself is pinned by a test
+ * in index.test.ts, so "someone deleted the argument" is a red suite.
+ */
+export type Defer = (work: Promise<unknown>) => void;
+
+export async function handleDebriefPost(
+  request: Request,
+  env: Env,
+  defer?: Defer,
+): Promise<Response> {
   const auth = await authenticate(request, env);
   if (auth === 'invalid') {
     return error(401, 'Bearer token not accepted');
@@ -482,6 +500,40 @@ export async function handleDebriefPost(request: Request, env: Env): Promise<Res
     } catch {
       // A failed tidy-up must not fail an upload that already succeeded.
     }
+
+    /*
+     * The spend ledger, fed only from here.
+     *
+     * `auth === 'agent'` is the whole security property. Anyone on the internet
+     * can POST to this route — that is the browser path, and it is deliberate —
+     * so an anonymous body reaching the emailer would be an email amplifier with
+     * a public URL: post, get a mail sent to a fixed address, repeat. The
+     * anonymous branch must never touch USAGE and must never send anything.
+     *
+     * Deferred rather than awaited, and deferred all the way back to the
+     * `JSON.stringify`: this runs on the agent's call-teardown path, and a KV
+     * read-modify-write plus an SMTP round trip has no business inside it. The
+     * `Promise.resolve().then` is what puts even the synchronous half — a
+     * stringify and a summarise over a record of up to 256 KB — behind the
+     * response instead of in front of it.
+     *
+     * `summariseCall` rather than `ended_at - meta.started_at`, because that
+     * subtraction measures how long the ROOM was held open and is the single
+     * largest source of nonsense in this codebase's history. See
+     * IDLE_TAIL_SECONDS in metrics.ts.
+     */
+    defer?.(
+      Promise.resolve().then(async () => {
+        const summary = summariseCall(JSON.stringify(record));
+        if (summary === null) return;
+        // The month a call belongs to is the month it ENDED in, not the month
+        // this deferred work happened to be scheduled in. A call ending at
+        // 23:59:59 on the last of the month would otherwise be ledgered against
+        // the next one, taking its minutes with it.
+        const at = Number.isFinite(record.ended_at) ? record.ended_at * 1000 : Date.now();
+        console.log(`usage ledger: ${await recordCallUsage(env, summary, at)}`);
+      }),
+    );
   }
 
   return json({ id, url: new URL(`/call/${id}`, request.url).toString() }, { status: 201 });

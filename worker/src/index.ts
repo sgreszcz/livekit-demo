@@ -18,11 +18,12 @@
  */
 
 import { handleActiveGet } from './active';
+import { handleTwilioAlert } from './alerts';
 import { handleDebriefGet, handleDebriefPost, handleDebriefPut } from './debrief';
 import type { Env } from './env';
 import { error, methodNotAllowed, tooManyRequests } from './http';
 import { handleMetricsGet } from './metrics';
-import { check, clientKey, DEBRIEF_WINDOWS, TOKEN_WINDOWS } from './ratelimit';
+import { ALERT_WINDOWS, check, clientKey, DEBRIEF_WINDOWS, TOKEN_WINDOWS } from './ratelimit';
 import { handleToken } from './token';
 import { runWarmup } from './warmup';
 
@@ -44,7 +45,13 @@ function decodePathSegment(raw: string): string | null {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  /**
+   * `ctx` is declared optional so the router's own tests can call `fetch` with
+   * the two arguments they have always passed. The runtime always supplies it;
+   * the only path that needs it is the debrief POST's deferred spend ledger,
+   * which is pinned by a test that does pass one.
+   */
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     let pathname: string;
     try {
       pathname = new URL(request.url).pathname;
@@ -87,10 +94,23 @@ export default {
           const decision = check('debrief', clientKey(request), DEBRIEF_WINDOWS);
           if (!decision.ok) return tooManyRequests(decision.retryAfter);
         }
-        return handleDebriefPost(request, env);
+        // The spend ledger and its email hang off `waitUntil`, so they cost the
+        // agent's teardown path nothing. See handleDebriefPost.
+        return handleDebriefPost(request, env, ctx && ((work) => ctx.waitUntil(work)));
       }
 
       return methodNotAllowed('POST', 'PUT');
+    }
+
+    // Twilio usage triggers, relayed to email. Authenticated by a secret in the
+    // query string — Twilio signs nothing this Worker can cheaply verify, so the
+    // callback URL IS the credential — and limited tightly, because a leaked
+    // callback URL is otherwise an email sender.
+    if (pathname === '/api/alerts/twilio') {
+      if (request.method !== 'POST') return methodNotAllowed('POST');
+      const decision = check('alerts', clientKey(request), ALERT_WINDOWS);
+      if (!decision.ok) return tooManyRequests(decision.retryAfter);
+      return handleTwilioAlert(request, env);
     }
 
     const item = DEBRIEF_ITEM.exec(pathname);

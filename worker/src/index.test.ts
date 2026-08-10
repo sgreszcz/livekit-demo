@@ -8,7 +8,7 @@
  * never reach a handler. What each handler then does is tested beside it.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from './env';
 import worker from './index';
 import { resetMetricsMemo } from './metrics';
@@ -43,6 +43,12 @@ function request(path: string, init: RequestInit = {}): Request {
 beforeEach(() => {
   resetRateLimits();
   resetMetricsMemo();
+});
+
+afterEach(() => {
+  // Only the hourly rate-limit test fakes the clock, but a leaked fake clock
+  // would make every later test in this file lie about time.
+  vi.useRealTimers();
 });
 
 describe('malformed percent-encoding', () => {
@@ -174,6 +180,55 @@ describe('rate limiting', () => {
     expect((await worker.fetch(anonymous(), env)).status).toBe(429);
   });
 
+  /*
+   * The numbers below are written out rather than read from `ALERT_WINDOWS`.
+   * A test that asserts the limit is whatever the limit happens to be passes
+   * for every value of it, including the one somebody fat-fingers to 5000.
+   */
+  const alert = () =>
+    new Request('https://cockpit.example/api/alerts/twilio?key=x', {
+      method: 'POST',
+      body: 'UsageCategory=totalprice',
+      headers: { 'cf-connecting-ip': '203.0.113.77' },
+    });
+
+  it('caps the alert webhook at five a minute', async () => {
+    // Nobody is behind this route — Twilio calls it when a trigger fires — so
+    // the limit can be what the traffic actually is.
+    const env = fakeEnv();
+    for (let i = 0; i < 5; i += 1) {
+      // No ALERT_WEBHOOK_KEY configured, so each is a 401; what matters is that
+      // the request reached the handler at all.
+      expect((await worker.fetch(alert(), env)).status).toBe(401);
+    }
+    const refused = await worker.fetch(alert(), env);
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
+  it('caps it at twenty an hour, which the per-minute window would never catch', async () => {
+    // Four bursts of five, a minute apart: never more than five in any minute,
+    // and still over the hour's allowance. The slow drip is exactly what the
+    // second window exists for.
+    vi.useFakeTimers();
+    const start = Date.parse('2026-08-10T09:00:00Z');
+    const env = fakeEnv();
+
+    for (let burst = 0; burst < 4; burst += 1) {
+      vi.setSystemTime(start + burst * 61_000);
+      for (let i = 0; i < 5; i += 1) {
+        expect((await worker.fetch(alert(), env)).status).toBe(401);
+      }
+    }
+
+    vi.setSystemTime(start + 4 * 61_000);
+    expect((await worker.fetch(alert(), env)).status).toBe(429);
+
+    // An hour after the first burst it is allowed again.
+    vi.setSystemTime(start + 61 * 60_000);
+    expect((await worker.fetch(alert(), env)).status).toBe(401);
+  });
+
   it('never throttles the agent', async () => {
     // The agent holds a bearer token and its uploads are the recordings this
     // whole system exists to keep. Throttling it would drop real calls.
@@ -199,5 +254,71 @@ describe('rate limiting', () => {
       );
       expect(response.status).toBe(201);
     }
+  });
+});
+
+describe('the alert webhook is a route like any other', () => {
+  it('takes POST and nothing else', async () => {
+    const response = await worker.fetch(request('/api/alerts/twilio'), fakeEnv());
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toBe('POST');
+  });
+
+  it('401s a request carrying no key', async () => {
+    const response = await worker.fetch(
+      request('/api/alerts/twilio', { method: 'POST', body: '' }),
+      fakeEnv(),
+    );
+    expect(response.status).toBe(401);
+  });
+});
+
+/**
+ * The ledger is deferred, which means it runs only if the router actually hands
+ * the handler somewhere to defer to. Nothing else fails if that argument is
+ * dropped — the upload still returns 201 — so the wiring is pinned here rather
+ * than left to be noticed from a spend alert that never arrives.
+ */
+describe('deferred work is given somewhere to go', () => {
+  it('threads waitUntil through to the debrief spend ledger', async () => {
+    const usagePuts: string[] = [];
+    const env = {
+      ...(fakeEnv() as unknown as Record<string, unknown>),
+      USAGE: {
+        async get() {
+          return null;
+        },
+        async put(key: string) {
+          usagePuts.push(key);
+        },
+      },
+    } as unknown as Env;
+
+    const deferred: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (work: Promise<unknown>) => deferred.push(work),
+      passThroughOnException: () => {},
+    } as unknown as ExecutionContext;
+
+    const response = await worker.fetch(
+      new Request('https://cockpit.example/api/debrief', {
+        method: 'POST',
+        body: JSON.stringify({
+          call_id: 'RM_router',
+          meta: { room: 'cockpit-x', started_at: 1723000000 },
+          ended_at: 1723000049.5,
+          messages: [{ v: 1, type: 'state', ts: 1723000000.5, payload: { state: 'listening' } }],
+        }),
+        headers: { authorization: 'Bearer the-real-token' },
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(201);
+    expect(deferred).toHaveLength(1);
+    await Promise.all(deferred);
+    // The month `ended_at` names, not the month this test runs in.
+    expect(usagePuts).toEqual(['usage_2024-08']);
   });
 });

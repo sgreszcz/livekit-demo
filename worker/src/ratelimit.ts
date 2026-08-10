@@ -76,6 +76,27 @@ export const DEBRIEF_WINDOWS: Window[] = [
 ];
 
 /**
+ * Tight, because nothing legitimate touches this route.
+ *
+ * `POST /api/alerts/twilio` is called by Twilio when a usage trigger fires —
+ * once, occasionally, per trigger. Nobody is behind it and no visitor's
+ * experience depends on it, so the "a room full of recruiters is one client"
+ * argument above does not apply and the limit can be what the traffic actually
+ * is.
+ *
+ * What it is NOT is a bound on a leaked webhook key. These counters are per
+ * address and per isolate, so anyone willing to send from more than one place
+ * gets a multiple of the numbers below — the same caveat as every other window
+ * in this file. What actually bounds the damage is that the recipient is fixed:
+ * the binding and `alerts.ts` both name one verified destination, so the worst
+ * a leaked key buys is spam in a mailbox we own, not an open relay.
+ */
+export const ALERT_WINDOWS: Window[] = [
+  { limit: 5, windowMs: 60_000 },
+  { limit: 20, windowMs: 60 * 60_000 },
+];
+
+/**
  * Distinct clients tracked before the table is swept. Bounded so that a
  * spray of forged addresses cannot grow the isolate's memory without limit —
  * the sweep drops whoever has been quiet longest.
