@@ -9,7 +9,7 @@ toggle and watch the waterfall degrade.
 
 Built because the voice-agent demo is easy — production is where teams bleed.
 
-- **Live demo:** https://cockpit.agentmaker.io — or call **+44 7782 684 287** from any phone
+- **Live demo:** https://cockpit.agentmaker.io — or call **+44 20 4652 7116** from any phone
 - **Telemetry contract:** [docs/TELEMETRY-SCHEMA.md](docs/TELEMETRY-SCHEMA.md)
 
 ## Architecture
@@ -23,6 +23,7 @@ Python agent (livekit-agents,          │
   ├─ per-turn telemetry → room data channel, topic "cockpit"
   ├─ chaos: runtime-injectable LLM latency, attributed per invocation
   ├─ get_call_metrics tool — the agent reads its own instruments
+  ├─ demo calls hard-capped at 5 min (COCKPIT_MAX_CALL_SECONDS), spoken 30 s warning
   └─ end of call → POST debrief → Cloudflare KV → shareable /call/:id replay
 
 Cloudflare Worker (cockpit.agentmaker.io)

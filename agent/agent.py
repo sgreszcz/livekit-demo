@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import random
 import time
@@ -53,6 +54,7 @@ from chaos import (
     parse_control_message,
     plan_voice_chaos,
 )
+from duration import CallCap
 from telemetry import (
     CONTROL_TOPIC,
     DebriefUploader,
@@ -76,6 +78,40 @@ TTS_MODEL = os.getenv("COCKPIT_TTS_MODEL", "cartesia/sonic-3")
 # Chaos mode's "slow model" swap. Read here rather than in chaos.py because module-level
 # env reads in an imported module would run before load_dotenv() below.
 SLOW_LLM_MODEL = os.getenv("COCKPIT_SLOW_LLM_MODEL", DEFAULT_SLOW_LLM_MODEL)
+
+def _seconds_env(name: str, default: float) -> float:
+    """An env-configured duration that fails towards the default, never towards off.
+
+    These two values are protective limits, so a value that cannot mean anything —
+    unparseable, ``nan`` (which fails every comparison and would slip past a ``<= 0``
+    check), ``inf`` — must not crash the worker at boot and must not silently disable
+    the cap. Only an explicit ``0`` turns it off.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    # Negative is rejected along with non-finite: a sign typo must not read as "off".
+    if math.isfinite(value) and value >= 0:
+        return value
+    logger.warning(
+        "%s=%r is not a non-negative finite number; using the default %.0f", name, raw, default
+    )
+    return default
+
+
+# Hard ceiling on one call, in seconds; 0 disables it. Nothing else ends a call — the
+# session ends on hangup, the job on room close, and a room stays open while anyone at
+# all is in it (998 seconds after a SIP hangup, once, live). Agent session minutes are
+# metered and are this demo's binding cost, so the worst case has to be bounded rather
+# than hoped about. Five minutes is the number because the average live call is 95
+# seconds: it is invisible to a real visitor and still caps the pathological case.
+MAX_CALL_SECONDS = _seconds_env("COCKPIT_MAX_CALL_SECONDS", 300.0)
+# How far ahead of the cap the agent says so, so nobody is cut off mid-answer.
+CAP_WARNING_SECONDS = _seconds_env("COCKPIT_CAP_WARNING_SECONDS", 30.0)
 
 # Rooms named `warmup-<random>` are not calls. They are the keep-warm ping described in
 # worker/src/warmup.ts, and they exist for one reason: LiveKit does not answer an inbound
@@ -632,6 +668,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # leave to the collector's discretion.
     flush_task: asyncio.Task[None] | None = None
     entry_task: asyncio.Task[None] | None = None
+    # The call-duration cap, started once the greeting is out. Declared here so the
+    # shutdown callback below can close over it before it is assigned.
+    cap_task: asyncio.Task[None] | None = None
     # Exactly one `call_summary` line per call: a log aggregator counts lines, and a
     # second one from the shutdown path would double every call in the fleet totals.
     # The final UPLOAD is retried on failure; the summary is not, because it cannot fail.
@@ -672,6 +711,13 @@ async def entrypoint(ctx: JobContext) -> None:
         """
         if entry_task is not None:
             entry_task.cancel()
+        if cap_task is not None and not cap_task.done():
+            # Usually a no-op: a cap-initiated hangup deletes the room, and room close is
+            # one of the things that gets this callback run in the first place, by which
+            # point the countdown has finished on its own. It earns its keep on the
+            # ordinary ending — the caller hung up first and the countdown is still
+            # parked in a sleep it will never need to wake from.
+            cap_task.cancel()
         if flush_task is not None and not flush_task.done():
             # Let the session-close flush finish rather than racing it. It is bounded by
             # FINAL_TIMEOUT, and cancelling an upload that is about to succeed in order
@@ -735,6 +781,36 @@ async def entrypoint(ctx: JobContext) -> None:
     # tagged with its speech id, and an assistant message in the chat context — so the
     # cockpit renders a normal, if partial, agent-initiated turn.
     session.say(GREETING)
+
+    async def _hangup() -> None:
+        """End the call for real: delete the room, which drops the SIP leg with it.
+
+        `ctx.delete_room()` rather than closing the session. Closing the session alone
+        leaves the room — and anyone in it — exactly as it was, and the room is the half
+        of the cost this cap exists to bound. Deleting it disconnects every participant,
+        which fires the session's own `close` handler and then the job shutdown, so the
+        debrief paths above run unchanged. It swallows its own errors and no-ops in
+        console mode, where there is no room to delete.
+        """
+        await ctx.delete_room()
+
+    cap = CallCap(
+        max_seconds=MAX_CALL_SECONDS,
+        warn_seconds=CAP_WARNING_SECONDS,
+        # `session.say` already has the shape the cap wants: text in, a SpeechHandle out.
+        speak=session.say,
+        hangup=_hangup,
+        # Read at the moment the cap fires, not captured now — the whole point is to know
+        # whether the caller is still there to be spoken to.
+        session_closed=lambda: closed_at is not None,
+        # delete_room resolves successfully even when the deletion failed (the SDK
+        # swallows its API errors), so the cap cannot know its hangup worked. If the
+        # normal shutdown path has not cancelled the countdown within the grace window,
+        # end the job locally: shutdown() needs no network, is idempotent, and stops the
+        # metered session minutes even if the room itself is beyond reach.
+        escalate=lambda: ctx.shutdown(reason="call_cap"),
+    )
+    cap_task = cap.start()
 
 
 if __name__ == "__main__":
