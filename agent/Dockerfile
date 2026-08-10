@@ -26,7 +26,7 @@ RUN uv sync --locked --no-dev
 # a no-op today; it keeps the image correct if a local plugin is ever added.
 RUN python -m livekit.agents download-files
 
-COPY agent.py telemetry.py chaos.py pricing.py ./
+COPY agent.py telemetry.py chaos.py pricing.py duration.py ./
 
 RUN chown -R agent:agent /app
 USER agent
