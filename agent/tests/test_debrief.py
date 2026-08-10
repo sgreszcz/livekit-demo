@@ -746,3 +746,80 @@ def test_log_call_summary_emits_one_parseable_line(caplog: pytest.LogCaptureFixt
 )
 def test_redaction_matches_the_worker_rule(raw: str, expected: str) -> None:
     assert telemetry.redact_room_name(raw) == expected
+
+
+# ---------------------------------------------------------------- endpoint scheme
+
+# Every debrief request carries DEBRIEF_TOKEN as a bearer header, so the endpoint is a
+# place a secret gets sent and the scheme is a security control, not a formatting detail.
+# Asserted per-scheme because the failure is silent by nature: a plain-http endpoint
+# uploads perfectly happily and nothing in the demo looks wrong.
+@pytest.mark.parametrize(
+    ("url", "allowed"),
+    [
+        ("https://cockpit.agentmaker.io/api/debrief", True),
+        # Loopback is where `wrangler dev` lives, and there is no network to sniff.
+        # Judged as an address, not a spelling, so every way of writing loopback works.
+        ("http://localhost:8787/api/debrief", True),
+        ("http://127.0.0.1:8787/api/debrief", True),
+        ("http://[::1]:8787/api/debrief", True),
+        ("http://[0:0:0:0:0:0:0:1]:8787/api/debrief", True),
+        ("http://127.0.0.2:8787/api/debrief", True),
+        # The whole point: a copy-pasted or stale http:// endpoint is refused.
+        ("http://cockpit.agentmaker.io/api/debrief", False),
+        ("http://192.168.1.10:8787/api/debrief", False),
+        # A hostname that merely RESOLVES to loopback is still a name on the network.
+        ("http://localhost.example.com:8787/api/debrief", False),
+        # Neither a transport nor a mistake worth guessing at.
+        ("ftp://example.com/debrief", False),
+        ("cockpit.agentmaker.io/api/debrief", False),
+        # Unparseable must mean "no endpoint", never an exception — this runs inside a
+        # connected entrypoint, where raising would kill the call, not just the upload.
+        ("https://[::1", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_only_tls_or_loopback_endpoints_receive_the_bearer_token(
+    url: str | None, allowed: bool
+) -> None:
+    assert telemetry.checked_debrief_url(url) == (url if allowed else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "posts"),
+    [
+        # The positive control, and it is the point of the parametrize: without it
+        # "did not upload" could just as well mean the fake is never called on this
+        # path at all, and the test below would pass against a deleted guard.
+        ("https://cockpit.agentmaker.io/api/debrief", True),
+        ("http://cockpit.agentmaker.io/api/debrief", False),
+    ],
+)
+async def test_only_a_tls_endpoint_receives_the_call(url: str, posts: bool) -> None:
+    """A refused endpoint behaves exactly like an unset one, not like a broken one.
+
+    The call still has to work: no exception, no retry loop, no checkpoint task left
+    holding a slot — just no debrief, and above all no bearer token on the wire.
+    """
+    log = FakeLog([])
+    log.emit(3)
+    post = FakePost({"ok": True, "url": "https://cockpit.agentmaker.io/call/abc"})
+    uploader = DebriefUploader(
+        url=url,
+        token="s3cret",
+        call_id="RM_abc",
+        meta={"room": "cockpit-abc"},
+        publisher=log,
+        post=post,
+    )
+    uploader.start()
+    await uploader.aclose()
+    share_url = await uploader.finalize(ended_at=1723000000.0)
+
+    assert bool(post.calls) is posts
+    # The token is the thing being protected, so assert on the token itself rather
+    # than only on the call count.
+    assert [c.token for c in post.calls] == (["s3cret"] if posts else [])
+    assert (share_url is not None) is posts

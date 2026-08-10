@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import math
@@ -25,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 import pricing
 
@@ -1113,6 +1115,62 @@ async def _http_debrief(
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _is_loopback_host(hostname: str | None) -> bool:
+    """True for a host that never leaves this machine, by address rather than by name.
+
+    ``urlsplit().hostname`` already strips IPv6 brackets and lowercases, so parsing the
+    address covers every spelling of loopback (``127.0.0.1``, ``127.0.0.2``, ``::1``,
+    ``0:0:0:0:0:0:0:1``) that a string set would have to enumerate — and got wrong once:
+    a bracketed ``[::1]`` entry in the old set could never match anything.
+    """
+    if not hostname:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def checked_debrief_url(url: str | None) -> str | None:
+    """The debrief endpoint, or ``None`` if it is not somewhere a secret may be sent.
+
+    Every debrief request carries ``DEBRIEF_TOKEN`` as a bearer header, and that token is
+    what separates a trusted agent record from an anonymous browser one — a leaked copy
+    lets anyone forge fleet metrics. ``DEBRIEF_URL`` is operator-supplied, so a typo, a
+    copy-pasted ``http://`` from a doc, or a stale staging value is enough to put it on
+    the wire in clear text. Refusing is the right failure: a debrief is a nice-to-have
+    (the demo works without a replay link) and the token is not.
+
+    Loopback is exempt because ``wrangler dev`` serves plain HTTP on localhost and there
+    is no network for anyone to be on. Anything else must be TLS.
+    """
+    if not url:
+        return None
+
+    # urlsplit raises on malformed input (`https://[::1` → "Invalid IPv6 URL"), and this
+    # runs inside a connected entrypoint: an unhandled typo here would abort every call,
+    # not just the upload. A URL that cannot be parsed gets the same treatment as one
+    # with the wrong scheme — refused, loudly, while the call itself carries on.
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme == "https":
+            return url
+        if parsed.scheme == "http" and _is_loopback_host(parsed.hostname):
+            return url
+        rejected = parsed.scheme or url
+    except ValueError:
+        rejected = url
+
+    logger.error(
+        "DEBRIEF_URL is %r, which would send DEBRIEF_TOKEN in clear text or cannot be "
+        "parsed; debrief upload disabled. Use https:// (or http:// on localhost for dev).",
+        rejected,
+    )
+    return None
+
+
 def _is_timeout(exc: BaseException) -> bool:
     """True for a timeout from either asyncio or httpx.
 
@@ -1201,13 +1259,16 @@ async def post_debrief(
     Kept as a standalone entry point (the one-shot upload, no checkpoints, no
     once-only bookkeeping) even though :class:`DebriefUploader` is what the agent runs.
     """
-    if not url:
-        logger.info("DEBRIEF_URL unset; skipping debrief upload (%d envelopes)", len(messages))
+    endpoint = checked_debrief_url(url)
+    if not endpoint:
+        # Either unset, or refused for its scheme — `checked_debrief_url` has already
+        # said which, at error level, so this line stays about the envelopes.
+        logger.info("no debrief endpoint; skipping debrief upload (%d envelopes)", len(messages))
         return None
 
     _, share_url = await _upload_final(
         _http_debrief,
-        url=url,
+        url=endpoint,
         token=token,
         body=_debrief_body(
             call_id=call_id,
@@ -1259,7 +1320,10 @@ class DebriefUploader:
         checkpoint_timeout: float = CHECKPOINT_TIMEOUT,
         final_timeout: float = FINAL_TIMEOUT,
     ) -> None:
-        self._url = url
+        # Rejected here rather than at each request: an endpoint that cannot be given
+        # the bearer token is indistinguishable from no endpoint at all, and every
+        # `if not self._url` guard below already means "no debrief this call".
+        self._url = checked_debrief_url(url)
         self._token = token
         self._call_id = call_id
         self._meta = meta
@@ -1389,8 +1453,9 @@ class DebriefUploader:
                 logger.debug("final debrief already uploaded for %s", self._call_id)
                 return self._share_url
             if not self._url:
+                # Unset, or refused for its scheme — `checked_debrief_url` logged which.
                 logger.info(
-                    "DEBRIEF_URL unset; skipping debrief upload (%d envelopes)",
+                    "no debrief endpoint; skipping debrief upload (%d envelopes)",
                     len(self._publisher.messages),
                 )
                 self._final_done = True
